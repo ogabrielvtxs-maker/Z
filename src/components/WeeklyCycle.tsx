@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { StudyCycle, User, SyllabusSection, SyllabusItem } from "../types";
-import { CheckSquare, Square, Target, Calendar, Lock, Unlock, HelpCircle, ChevronRight, PlayCircle, Award, Clock, Bell, Archive, Eye, EyeOff } from "lucide-react";
+import { CheckSquare, Square, Target, Calendar, Lock, Unlock, HelpCircle, ChevronRight, PlayCircle, Award, Clock, Bell, Archive, Eye, EyeOff, Plus, Minus } from "lucide-react";
 import { fetchStudyCycleFromFirestore, saveStudyCycleToFirestore } from "../lib/firebase";
 
 interface WeeklyCycleProps {
@@ -11,6 +11,8 @@ interface WeeklyCycleProps {
 export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycleProps) {
   const [cycle, setCycle] = useState<StudyCycle | null>(null);
   const [showArchivedDays, setShowArchivedDays] = useState<boolean>(false);
+  const [dailyGoalHours, setDailyGoalHours] = useState<number>(4);
+  const [studiedSecondsToday, setStudiedSecondsToday] = useState<number>(0);
   const [revisionAlerts, setRevisionAlerts] = useState<{
     sectionId: string;
     subject: string;
@@ -19,6 +21,41 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
     stage: number;
     nextDate: string;
   }[]>([]);
+
+  // Load and sync daily study goal & studied time from Pomodoro
+  useEffect(() => {
+    const loadGoalAndProgress = () => {
+      const savedGoal = localStorage.getItem(`daily_study_goal_hours_${currentUser.id}`);
+      if (savedGoal) {
+        setDailyGoalHours(parseFloat(savedGoal));
+      } else {
+        setDailyGoalHours(4);
+      }
+
+      const todayStr = new Date().toLocaleDateString("sv-SE");
+      const savedSecs = localStorage.getItem(`pomodoro_study_seconds_${currentUser.id}_${todayStr}`);
+      if (savedSecs) {
+        setStudiedSecondsToday(parseInt(savedSecs));
+      } else {
+        setStudiedSecondsToday(0);
+      }
+    };
+
+    loadGoalAndProgress();
+    window.addEventListener("storage", loadGoalAndProgress);
+    return () => {
+      window.removeEventListener("storage", loadGoalAndProgress);
+    };
+  }, [currentUser]);
+
+  const handleUpdateGoal = (newGoal: number) => {
+    const val = Math.max(0.5, Math.min(24, Math.round(newGoal * 2) / 2)); // 0.5h steps, min 0.5h, max 24h
+    setDailyGoalHours(val);
+    localStorage.setItem(`daily_study_goal_hours_${currentUser.id}`, val.toString());
+    
+    // Dispatch storage event to alert all listening components
+    window.dispatchEvent(new Event("storage"));
+  };
 
   // Load study cycle from localStorage/Firestore for this student
   useEffect(() => {
@@ -379,6 +416,105 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Daily Study Goal Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-amber-400/10 text-amber-400">
+                  <Target className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-100 uppercase tracking-wider">
+                    Meta Diária de Estudos
+                  </h3>
+                  <p className="text-slate-400 text-xs">
+                    Defina seu objetivo diário e veja seu progresso em tempo real conforme estuda usando o Pomodoro Tático.
+                  </p>
+                </div>
+              </div>
+
+              {/* Goal Adjuster Controls */}
+              <div className="flex items-center gap-3 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-850 self-start sm:self-auto">
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 font-extrabold">Objetivo:</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleUpdateGoal(dailyGoalHours - 0.5)}
+                    className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition hover:text-white font-bold text-xs cursor-pointer"
+                    title="Diminuir 30min"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="font-mono text-sm font-black text-amber-400 min-w-[45px] text-center">
+                    {dailyGoalHours.toFixed(1)}h
+                  </span>
+                  <button
+                    onClick={() => handleUpdateGoal(dailyGoalHours + 0.5)}
+                    className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition hover:text-white font-bold text-xs cursor-pointer"
+                    title="Aumentar 30min"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Progress Status and Visualization */}
+            {(() => {
+              const studiedHours = studiedSecondsToday / 3600;
+              const percent = Math.min(100, Math.round((studiedHours / dailyGoalHours) * 100));
+              const isCompleted = studiedHours >= dailyGoalHours;
+
+              return (
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-300">Tempo estudado hoje no Pomodoro:</span>
+                      <span className="font-mono text-sm font-black text-white bg-slate-950 px-2.5 py-0.5 rounded-lg border border-slate-850">
+                        {studiedHours.toFixed(2)}h
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {isCompleted ? (
+                        <span className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
+                          <Award className="w-3.5 h-3.5" />
+                          Meta Cumprida! Excelente Soldado!
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400 font-bold">
+                          Faltam <span className="text-amber-400 font-mono">{(Math.max(0, dailyGoalHours - studiedHours)).toFixed(2)}h</span> para atingir a meta
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* High quality progress bar */}
+                  <div className="relative">
+                    <div className="w-full bg-slate-950 h-4 rounded-full overflow-hidden p-[2px] border border-slate-850">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 relative ${
+                          isCompleted 
+                            ? "bg-gradient-to-r from-emerald-500 to-teal-400" 
+                            : "bg-gradient-to-r from-amber-500 to-amber-300"
+                        }`}
+                        style={{ width: `${percent}%` }}
+                      >
+                        {/* Glow effect */}
+                        <div className="absolute top-0 right-0 bottom-0 left-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.15)_0%,rgba(255,255,255,0)_100%)] animate-pulse" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between text-[10px] text-slate-500 font-extrabold uppercase tracking-widest">
+                    <span>{percent}% Completo</span>
+                    <span>0.0h</span>
+                    <span>{dailyGoalHours.toFixed(1)}h</span>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Active Days Section */}

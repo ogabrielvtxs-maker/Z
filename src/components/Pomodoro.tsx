@@ -1,7 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { Play, Pause, RotateCcw, Flame, Coffee, Check, Clock } from "lucide-react";
+import { Play, Pause, RotateCcw, Flame, Coffee, Check, Clock, Target } from "lucide-react";
+import { User } from "../types";
 
-export default function Pomodoro() {
+interface PomodoroProps {
+  currentUser: User;
+}
+
+export default function Pomodoro({ currentUser }: PomodoroProps) {
   const [focusTime, setFocusTime] = useState<number>(25); // minutes
   const [breakTime, setBreakTime] = useState<number>(5); // minutes
   
@@ -9,6 +14,9 @@ export default function Pomodoro() {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [timeLeft, setTimeLeft] = useState<number>(25 * 60); // seconds
   const [sessionCount, setSessionCount] = useState<number>(0);
+
+  const [dailyGoalHours, setDailyGoalHours] = useState<number>(4);
+  const [studiedSecondsToday, setStudiedSecondsToday] = useState<number>(0);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -18,6 +26,32 @@ export default function Pomodoro() {
       setTimeLeft((isFocusMode ? focusTime : breakTime) * 60);
     }
   }, [focusTime, breakTime, isFocusMode]);
+
+  // Load goal and daily study progress
+  useEffect(() => {
+    const loadGoalAndProgress = () => {
+      const savedGoal = localStorage.getItem(`daily_study_goal_hours_${currentUser.id}`);
+      if (savedGoal) {
+        setDailyGoalHours(parseFloat(savedGoal));
+      } else {
+        setDailyGoalHours(4);
+      }
+
+      const todayStr = new Date().toLocaleDateString("sv-SE");
+      const savedSecs = localStorage.getItem(`pomodoro_study_seconds_${currentUser.id}_${todayStr}`);
+      if (savedSecs) {
+        setStudiedSecondsToday(parseInt(savedSecs));
+      } else {
+        setStudiedSecondsToday(0);
+      }
+    };
+
+    loadGoalAndProgress();
+    window.addEventListener("storage", loadGoalAndProgress);
+    return () => {
+      window.removeEventListener("storage", loadGoalAndProgress);
+    };
+  }, [currentUser]);
 
   // Handle countdown
   useEffect(() => {
@@ -36,6 +70,18 @@ export default function Pomodoro() {
               return focusTime * 60;
             }
           }
+
+          // If in focus mode, increment studied seconds for the daily goal in real-time
+          if (isFocusMode) {
+            const todayStr = new Date().toLocaleDateString("sv-SE");
+            const storageKey = `pomodoro_study_seconds_${currentUser.id}_${todayStr}`;
+            const currentSeconds = parseInt(localStorage.getItem(storageKey) || "0") + 1;
+            localStorage.setItem(storageKey, currentSeconds.toString());
+            
+            // Dispatch storage event so other components (like WeeklyCycle) update immediately
+            window.dispatchEvent(new Event("storage"));
+          }
+
           return prev - 1;
         });
       }, 1000);
@@ -46,7 +92,7 @@ export default function Pomodoro() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isPlaying, isFocusMode, focusTime, breakTime]);
+  }, [isPlaying, isFocusMode, focusTime, breakTime, currentUser]);
 
   const togglePlay = () => {
     setIsPlaying(!isPlaying);
@@ -136,7 +182,7 @@ export default function Pomodoro() {
       </div>
 
       {/* Control Buttons */}
-      <div className="flex items-center justify-center gap-4 mb-8">
+      <div className="flex items-center justify-center gap-4 mb-6">
         <button
           onClick={resetTimer}
           className="p-3 rounded-full bg-slate-800 hover:bg-slate-700 transition border border-slate-700 hover:border-slate-600 cursor-pointer"
@@ -164,6 +210,31 @@ export default function Pomodoro() {
             </>
           )}
         </button>
+      </div>
+
+      {/* Daily Goal Progress Bar inside Pomodoro */}
+      <div className="bg-slate-950/60 border border-slate-850 p-4 rounded-2xl space-y-2 mb-6">
+        <div className="flex items-center justify-between text-xs font-bold text-slate-300">
+          <span className="flex items-center gap-1.5">
+            <Target className="w-4 h-4 text-amber-400" />
+            Progresso da Meta Diária
+          </span>
+          <span className="font-mono text-amber-400 font-black">
+            {(studiedSecondsToday / 3600).toFixed(2)}h / {dailyGoalHours}h
+          </span>
+        </div>
+        
+        {/* Progress Bar */}
+        <div className="w-full bg-slate-900 h-2.5 rounded-full overflow-hidden border border-slate-800">
+          <div 
+            className="bg-amber-400 h-full rounded-full transition-all duration-300"
+            style={{ width: `${Math.min(100, (studiedSecondsToday / (dailyGoalHours * 3600)) * 100)}%` }}
+          />
+        </div>
+        <div className="flex justify-between text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+          <span>{Math.min(100, Math.round((studiedSecondsToday / (dailyGoalHours * 3600)) * 100))}% Concluído</span>
+          <span>Objetivo: {dailyGoalHours} horas</span>
+        </div>
       </div>
 
       {/* Config Settings */}

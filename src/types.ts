@@ -49,7 +49,7 @@ export interface ContentItem {
   id: string;
   title: string;
   subtitle: string;
-  type: "video" | "pdf" | "link";
+  type: "video" | "pdf" | "link" | "simulado";
   url: string; // YouTube video link or external URL
   category: "cfo" | "soldado" | "both";
   createdAt: string;

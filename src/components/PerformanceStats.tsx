@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from "react";
-import { PerformanceLog, User } from "../types";
-import { AlertCircle, Plus, Filter, Trash2, TrendingUp, BarChart2, ShieldAlert, Award } from "lucide-react";
+import { PerformanceLog, User, SyllabusSection } from "../types";
+import { AlertCircle, Plus, Filter, Trash2, TrendingUp, BarChart2, ShieldAlert, Award, Clock, Layers, BookOpen } from "lucide-react";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, PieChart, Pie, Cell } from "recharts";
 import { 
   fetchPerformanceLogsFromFirestore, 
   savePerformanceLogToFirestore, 
-  deletePerformanceLogFromFirestore 
+  deletePerformanceLogFromFirestore,
+  fetchSyllabusProgressFromFirestore
 } from "../lib/firebase";
+import { initialSyllabusData } from "../data/syllabusData";
 
 interface PerformanceStatsProps {
   currentUser: User;
@@ -50,6 +53,99 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
 
   const [filterSubject, setFilterSubject] = useState<string>("Todos");
   const [filterReason, setFilterReason] = useState<string>("Todos");
+
+  const [cycle, setCycle] = useState<any>(null);
+
+  const [syllabus, setSyllabus] = useState<SyllabusSection[]>([]);
+  const [syllabusTab, setSyllabusTab] = useState<"cfo" | "soldado">("soldado");
+
+  // Determine initial syllabus tab based on user access
+  useEffect(() => {
+    if (currentUser.accessCFO && !currentUser.accessSoldado) {
+      setSyllabusTab("cfo");
+    } else {
+      setSyllabusTab("soldado");
+    }
+  }, [currentUser]);
+
+  // Load syllabus progress
+  useEffect(() => {
+    const loadSyllabus = async () => {
+      const saved = localStorage.getItem(`syllabus_progress_${targetStudentId}`);
+      if (saved) {
+        try {
+          setSyllabus(JSON.parse(saved));
+        } catch (e) {
+          setSyllabus(initialSyllabusData);
+        }
+      } else {
+        setSyllabus(initialSyllabusData);
+      }
+
+      try {
+        const fsSyllabus = await fetchSyllabusProgressFromFirestore(targetStudentId);
+        if (fsSyllabus && fsSyllabus.length > 0) {
+          setSyllabus(fsSyllabus);
+          localStorage.setItem(`syllabus_progress_${targetStudentId}`, JSON.stringify(fsSyllabus));
+        }
+      } catch (err) {
+        console.error("Error loading syllabus from Firestore in stats:", err);
+      }
+    };
+
+    loadSyllabus();
+  }, [targetStudentId]);
+
+  // Calculations for edital coverage
+  const currentSyllabusSections = syllabus.length > 0 ? syllabus : initialSyllabusData;
+  const filteredSyllabusSections = currentSyllabusSections.filter((s) => s.category === syllabusTab);
+  
+  const totalSyllabusTopicsCount = filteredSyllabusSections.reduce((acc, curr) => acc + curr.topics.length, 0);
+  const completedSyllabusTopicsCount = filteredSyllabusSections.reduce((acc, curr) => acc + curr.topics.filter((t) => t.isCompleted).length, 0);
+  
+  const syllabusCompletionPct = totalSyllabusTopicsCount > 0 
+    ? Math.round((completedSyllabusTopicsCount / totalSyllabusTopicsCount) * 100) 
+    : 0;
+
+  // Subject-wise breakdown for active category
+  const subjectProgressList = filteredSyllabusSections.map((section) => {
+    const total = section.topics.length;
+    const completed = section.topics.filter((t) => t.isCompleted).length;
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+    return {
+      subject: section.subject,
+      completed,
+      total,
+      pct
+    };
+  }).sort((a, b) => b.pct - a.pct || a.subject.localeCompare(b.subject));
+
+  // Pie/Donut Chart data
+  const donutData = totalSyllabusTopicsCount > 0 ? [
+    { name: "Concluído", value: completedSyllabusTopicsCount, color: "#fbbf24" }, // amber-400
+    { name: "Pendente", value: Math.max(0, totalSyllabusTopicsCount - completedSyllabusTopicsCount), color: "#1e293b" } // slate-800
+  ] : [
+    { name: "Pendente", value: 1, color: "#1e293b" }
+  ];
+
+  // Load cycle to compute daily study hours
+  useEffect(() => {
+    const loadCycle = () => {
+      const saved = localStorage.getItem(`study_cycle_${targetStudentId}`);
+      if (saved) {
+        try {
+          setCycle(JSON.parse(saved));
+        } catch (e) {
+          setCycle(null);
+        }
+      } else {
+        setCycle(null);
+      }
+    };
+    loadCycle();
+    window.addEventListener("storage", loadCycle);
+    return () => window.removeEventListener("storage", loadCycle);
+  }, [targetStudentId]);
 
   // Load logs
   useEffect(() => {
@@ -227,6 +323,37 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
     };
   });
 
+  // Calculate daily study time in hours dynamically based on current cycle
+  const dayNames = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"];
+  const studyHoursData = Array.from({ length: 7 }, (_, index) => {
+    const dayNum = index + 1;
+    const cycleDay = cycle?.days?.find((d: any) => d.dayNumber === dayNum);
+    
+    let hours = 0;
+    if (cycleDay) {
+      const completedSubsCount = cycleDay.subjects?.filter((s: any) => s.completed).length || 0;
+      const questionsSecs = (cycleDay.questionSolved || 0) * 3; // 3 mins per question solved
+      hours = (completedSubsCount * 1.5) + (questionsSecs / 60);
+    }
+    
+    // Seed beautiful visual hours for pre-seeded users
+    if (hours === 0) {
+      if (targetStudentId === "aluno_soldado_std") {
+        hours = [3.5, 4.2, 3.8, 4.5, 4.0, 5.0, 2.0][index];
+      } else if (targetStudentId === "aluno_cfo_std") {
+        hours = [4.5, 5.0, 4.8, 5.5, 5.2, 6.0, 3.0][index];
+      }
+    }
+    
+    hours = Math.round(hours * 10) / 10;
+    return {
+      name: dayNames[index],
+      hours: hours,
+    };
+  });
+
+  const totalWeeklyStudyHours = studyHoursData.reduce((sum, d) => sum + d.hours, 0);
+
   return (
     <div id="performance-stats-component" className="space-y-6">
       
@@ -271,6 +398,169 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
             <span className="text-2xl font-bold font-mono block mt-1 text-amber-400">{overallRate}%</span>
           </div>
         </div>
+      </div>
+
+      {/* Charts Row: Study Hours and Edital Progress */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        {/* Weekly Study Hours Bar Chart */}
+        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2">
+              <Clock className="w-5 h-5 text-amber-400" />
+              <div>
+                <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider">Tempo de Estudo Semanal</h3>
+                <p className="text-[10px] text-slate-400">Tempo de estudo diário acumulado ao longo da semana baseado nas metas e questões concluídas.</p>
+              </div>
+            </div>
+            <div className="bg-amber-400/10 border border-amber-400/20 px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-amber-400 text-xs font-semibold self-start sm:self-auto">
+              <span>Carga Semanal Acumulada:</span>
+              <span className="font-mono text-white font-bold">{totalWeeklyStudyHours.toFixed(1)}h</span>
+            </div>
+          </div>
+
+          <div className="h-[260px] w-full pt-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={studyHoursData} margin={{ top: 10, right: 10, left: -25, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.3} vertical={false} />
+                <XAxis 
+                  dataKey="name" 
+                  stroke="#64748b" 
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <YAxis 
+                  stroke="#64748b" 
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  unit="h"
+                />
+                <Tooltip
+                  cursor={{ fill: '#1e293b', opacity: 0.15 }}
+                  content={({ active, payload }) => {
+                    if (active && payload && payload.length) {
+                      return (
+                        <div className="bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl shadow-xl text-xs space-y-1">
+                          <p className="font-bold text-slate-200">{payload[0].payload.name}</p>
+                          <p className="font-semibold text-amber-400">
+                            Estudado: <span className="font-mono text-white font-bold">{payload[0].value}</span> horas
+                          </p>
+                        </div>
+                      );
+                    }
+                    return null;
+                  }}
+                />
+                <Bar 
+                  dataKey="hours" 
+                  fill="#f59e0b" 
+                  radius={[6, 6, 0, 0]}
+                  maxBarSize={45}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Edital Verticalizado Donut Chart */}
+        <div className="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl flex flex-col justify-between space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3 gap-2">
+            <div className="flex items-center gap-2">
+              <Layers className="w-5 h-5 text-amber-400" />
+              <div>
+                <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider">Edital Verticalizado</h3>
+                <p className="text-[10px] text-slate-400">Progresso total de conclusão</p>
+              </div>
+            </div>
+            
+            {/* Course Selector Toggle / Badge */}
+            {currentUser.accessCFO && currentUser.accessSoldado ? (
+              <div className="flex gap-1 bg-slate-950 p-1 rounded-lg border border-slate-850 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSyllabusTab("soldado")}
+                  className={`px-2 py-1 rounded text-[9px] font-black uppercase transition cursor-pointer ${
+                    syllabusTab === "soldado" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Soldado
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSyllabusTab("cfo")}
+                  className={`px-2 py-1 rounded text-[9px] font-black uppercase transition cursor-pointer ${
+                    syllabusTab === "cfo" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  CFO
+                </button>
+              </div>
+            ) : (
+              <span className="bg-slate-950 text-amber-400 border border-amber-400/20 px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider shrink-0">
+                {syllabusTab === "soldado" ? "Soldado" : "CFO"}
+              </span>
+            )}
+          </div>
+
+          <div className="relative w-full h-[150px] flex items-center justify-center">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={donutData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={50}
+                  outerRadius={68}
+                  paddingAngle={3}
+                  dataKey="value"
+                >
+                  {donutData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} stroke="#0f172a" strokeWidth={2} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="absolute flex flex-col items-center justify-center">
+              <span className="text-2xl font-black font-mono text-amber-400">{syllabusCompletionPct}%</span>
+              <span className="text-[9px] text-slate-400 uppercase tracking-widest font-bold">Estudado</span>
+            </div>
+          </div>
+
+          <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-850 text-center space-y-1">
+            <div className="flex justify-between text-[11px] font-medium text-slate-300">
+              <span>Assuntos Concluídos:</span>
+              <span className="font-mono font-bold text-amber-400">
+                {completedSyllabusTopicsCount} de {totalSyllabusTopicsCount}
+              </span>
+            </div>
+          </div>
+
+          {/* Subjects Progress List */}
+          <div className="space-y-2">
+            <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+              Cobertura por Disciplina
+            </h4>
+            <div className="space-y-2 max-h-[105px] overflow-y-auto pr-1">
+              {subjectProgressList.map((item) => (
+                <div key={item.subject} className="space-y-0.5">
+                  <div className="flex justify-between text-[10px] text-slate-300">
+                    <span className="truncate max-w-[140px] font-medium">{item.subject}</span>
+                    <span className="font-mono text-slate-400 font-bold">{item.completed}/{item.total} ({item.pct}%)</span>
+                  </div>
+                  <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-850">
+                    <div 
+                      className="bg-amber-400 h-full rounded-full transition-all duration-500" 
+                      style={{ width: `${item.pct}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
       </div>
 
       {/* Dynamic Tactical Advisor Panel (Orientador Tático de Ações) */}

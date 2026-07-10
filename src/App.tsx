@@ -26,7 +26,8 @@ import {
   Award,
   Bell,
   Menu,
-  X
+  X,
+  ClipboardList
 } from "lucide-react";
 
 const INITIAL_USERS: User[] = [
@@ -459,18 +460,6 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={() => setActiveTab("content")}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === "content" 
-                      ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
-                      : "text-slate-400 hover:bg-slate-950 hover:text-white"
-                  }`}
-                >
-                  <FolderOpen className="w-4 h-4 shrink-0" />
-                  <span>Biblioteca Pública</span>
-                </button>
-
-                <button
                   onClick={() => setActiveTab("inbox")}
                   className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
                     activeTab === "inbox" 
@@ -490,6 +479,32 @@ export default function App() {
                 </button>
               </>
             )}
+
+            {/* Biblioteca Area - Available for both students and admins */}
+            <button
+              onClick={() => setActiveTab("content")}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                activeTab === "content" 
+                  ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                  : "text-slate-400 hover:bg-slate-950 hover:text-white"
+              }`}
+            >
+              <FolderOpen className="w-4 h-4 shrink-0" />
+              <span>{currentUser.isAdmin ? "Biblioteca & Materiais" : "Biblioteca Pública"}</span>
+            </button>
+
+            {/* Simulados Area - Dedicated tab for mock exams and tests */}
+            <button
+              onClick={() => setActiveTab("simulados")}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                activeTab === "simulados" 
+                  ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                  : "text-slate-400 hover:bg-slate-950 hover:text-white"
+              }`}
+            >
+              <ClipboardList className="w-4 h-4 shrink-0 text-amber-400" />
+              <span>{currentUser.isAdmin ? "Gerenciar Simulados" : "Simulados & Provas"}</span>
+            </button>
 
             {/* Admin Area - Available for admin only or student with admin role */}
             {currentUser.isAdmin && (
@@ -559,6 +574,15 @@ export default function App() {
                   Biblioteca
                 </button>
                 <button
+                  onClick={() => { setActiveTab("simulados"); setMobileMenuOpen(false); }}
+                  className={`p-3 text-center rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 transition ${
+                    activeTab === "simulados" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
+                  }`}
+                >
+                  <ClipboardList className="w-4 h-4" />
+                  Simulados
+                </button>
+                <button
                   onClick={() => { setActiveTab("inbox"); setMobileMenuOpen(false); }}
                   className={`p-3 text-center rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 transition relative ${
                     activeTab === "inbox" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
@@ -571,15 +595,35 @@ export default function App() {
             )}
 
             {currentUser.isAdmin && (
-              <button
-                onClick={() => { setActiveTab("admin"); setMobileMenuOpen(false); }}
-                className={`w-full p-3 text-center rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition ${
-                  activeTab === "admin" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
-                }`}
-              >
-                <Shield className="w-4 h-4" />
-                Painel Administrativo
-              </button>
+              <div className="space-y-2">
+                <button
+                  onClick={() => { setActiveTab("content"); setMobileMenuOpen(false); }}
+                  className={`w-full p-3 text-center rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition ${
+                    activeTab === "content" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
+                  }`}
+                >
+                  <FolderOpen className="w-4 h-4" />
+                  Biblioteca &amp; Materiais
+                </button>
+                <button
+                  onClick={() => { setActiveTab("simulados"); setMobileMenuOpen(false); }}
+                  className={`w-full p-3 text-center rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition ${
+                    activeTab === "simulados" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
+                  }`}
+                >
+                  <ClipboardList className="w-4 h-4" />
+                  Gerenciar Simulados
+                </button>
+                <button
+                  onClick={() => { setActiveTab("admin"); setMobileMenuOpen(false); }}
+                  className={`w-full p-3 text-center rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition ${
+                    activeTab === "admin" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
+                  }`}
+                >
+                  <Shield className="w-4 h-4" />
+                  Painel Administrativo
+                </button>
+              </div>
             )}
 
             {/* Mobile Logout Button */}
@@ -605,7 +649,7 @@ export default function App() {
           )}
 
           {activeTab === "pomodoro" && !currentUser.isAdmin && (
-            <Pomodoro />
+            <Pomodoro currentUser={currentUser} />
           )}
 
           {activeTab === "stats" && !currentUser.isAdmin && (
@@ -617,7 +661,11 @@ export default function App() {
           )}
 
           {activeTab === "content" && (
-            <ContentArea currentUser={currentUser} />
+            <ContentArea currentUser={currentUser} onlySimulados={false} />
+          )}
+
+          {activeTab === "simulados" && (
+            <ContentArea currentUser={currentUser} onlySimulados={true} />
           )}
 
           {/* Student Mailbox (Caixa de Correio) */}

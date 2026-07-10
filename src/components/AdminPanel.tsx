@@ -42,7 +42,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     }
 
     const emailLower = newUserEmail.toLowerCase().trim();
-    const emailExists = allUsers.some(u => u.email.toLowerCase().trim() === emailLower);
+    const emailExists = allUsers.some(u => u && u.email && u.email.toLowerCase().trim() === emailLower);
     if (emailExists) {
       setNotification({ type: "error", message: "Este e-mail já está cadastrado na plataforma." });
       return;
@@ -111,7 +111,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   }, [notification]);
 
   // Approved students list for selectors
-  const approvedStudents = allUsers.filter((u) => u.isApproved && !u.isAdmin);
+  const approvedStudents = allUsers.filter((u) => u && u.isApproved && !u.isAdmin);
 
   useEffect(() => {
     if (approvedStudents.length > 0 && !selectedStudentId) {
@@ -587,7 +587,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/50">
-                {allUsers.map((user) => (
+                {allUsers.filter(Boolean).map((user) => (
                   <tr key={user.id} className="hover:bg-slate-950/40 transition">
                     <td className="p-3">
                       <span className="font-bold text-slate-200 block">{user.name}</span>
