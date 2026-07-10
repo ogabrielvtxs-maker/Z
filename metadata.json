@@ -1,0 +1,6 @@
+{
+  "name": "Plataforma de Estudos PMBA",
+  "description": "Plataforma completa de acompanhamento de estudos para CFO e Soldado PMBA. Inclui edital verticalizado, ciclos de estudos, estatísticas de desempenho, pomodoro e relatórios.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

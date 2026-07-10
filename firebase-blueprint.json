@@ -1,0 +1,120 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile in the study platform",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "password": { "type": "string" },
+        "accessCFO": { "type": "boolean" },
+        "accessSoldado": { "type": "boolean" },
+        "isAdmin": { "type": "boolean" },
+        "isApproved": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "accessCFO", "accessSoldado", "isAdmin", "isApproved", "createdAt"]
+    },
+    "StudyCycle": {
+      "title": "StudyCycle",
+      "description": "Weekly study cycle assigned to a student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "weekNumber": { "type": "number" },
+        "days": { "type": "array" },
+        "unlockedAt": { "type": "string" },
+        "isCompleted": { "type": "boolean" }
+      },
+      "required": ["id", "studentId", "studentName", "weekNumber", "days", "unlockedAt", "isCompleted"]
+    },
+    "WeeklyReport": {
+      "title": "WeeklyReport",
+      "description": "Report sent to student's inbox (Correio)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "weekNumber": { "type": "number" },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "studentId", "weekNumber", "content", "createdAt", "updatedAt"]
+    },
+    "ContentItem": {
+      "title": "ContentItem",
+      "description": "Shared video, PDF, or link item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "type": { "type": "string" },
+        "url": { "type": "string" },
+        "category": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "topic": { "type": "string" },
+        "subtopic": { "type": "string" }
+      },
+      "required": ["id", "title", "subtitle", "type", "url", "category", "createdAt"]
+    },
+    "SyllabusProgress": {
+      "title": "SyllabusProgress",
+      "description": "The current vertical syllabus progress for a student",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "sections": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["studentId", "sections", "updatedAt"]
+    },
+    "PerformanceLog": {
+      "title": "PerformanceLog",
+      "description": "Individual performance logs tracking errors and stats for questions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "date": { "type": "string" },
+        "subject": { "type": "string" },
+        "topic": { "type": "string" },
+        "reasonForError": { "type": "string" },
+        "questionsAttempted": { "type": "number" },
+        "questionsCorrect": { "type": "number" }
+      },
+      "required": ["id", "studentId", "date", "subject", "topic", "reasonForError", "questionsAttempted", "questionsCorrect"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Active users registered on the platform"
+    },
+    "/study_cycles/{studentId}": {
+      "schema": "StudyCycle",
+      "description": "Assigned study cycles of the student"
+    },
+    "/reports/{reportId}": {
+      "schema": "WeeklyReport",
+      "description": "Weekly feedback reports"
+    },
+    "/shared_content/{itemId}": {
+      "schema": "ContentItem",
+      "description": "Syllabus supplementary material or links shared by admins"
+    },
+    "/syllabus_progress/{studentId}": {
+      "schema": "SyllabusProgress",
+      "description": "Student's syllabus tracking checkpoints"
+    },
+    "/performance_logs_{studentId}/{logId}": {
+      "schema": "PerformanceLog",
+      "description": "Error tracking registers for the specified studentId"
+    }
+  }
+}

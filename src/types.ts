@@ -1,0 +1,88 @@
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  password?: string;
+  accessCFO: boolean;
+  accessSoldado: boolean;
+  isAdmin: boolean;
+  isApproved: boolean;
+  createdAt: string;
+}
+
+export interface CycleSubject {
+  id: string;
+  name: string;
+  completed: boolean;
+}
+
+export interface CycleDay {
+  dayNumber: number; // 1 to 7
+  questionTarget: number;
+  questionSolved: number;
+  subjects: CycleSubject[]; // up to 4
+  completed: boolean;
+}
+
+export interface StudyCycle {
+  id: string;
+  studentId: string;
+  studentName: string;
+  weekNumber: number;
+  days: CycleDay[];
+  unlockedAt: string; // Date string
+  isCompleted: boolean;
+}
+
+export interface PerformanceLog {
+  id: string;
+  studentId: string;
+  date: string;
+  subject: string;
+  topic: string;
+  reasonForError: string; // Motivo do erro
+  questionsAttempted: number;
+  questionsCorrect: number;
+}
+
+export interface ContentItem {
+  id: string;
+  title: string;
+  subtitle: string;
+  type: "video" | "pdf" | "link";
+  url: string; // YouTube video link or external URL
+  category: "cfo" | "soldado" | "both";
+  createdAt: string;
+  topic?: string; // Tópico
+  subtopic?: string; // Subtópico
+}
+
+export interface WeeklyReport {
+  id: string;
+  studentId: string;
+  weekNumber: number;
+  content: string; // Markdown / Text report
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SyllabusItem {
+  id: string;
+  title: string;
+  isCompleted: boolean;
+  studyCount: number; // For tracking revision loop
+  hasSummary: boolean;
+  hasQuestions: boolean;
+  correctRate: number; // percentage (0-100)
+  spacedRepetitionActive?: boolean;
+  nextRevisionDate?: string;
+  revisionStage?: number;
+  lastRevisionDate?: string;
+}
+
+export interface SyllabusSection {
+  id: string;
+  category: "cfo" | "soldado";
+  subject: string; // e.g. "LÍNGUA PORTUGUESA", "DIREITO CONSTITUCIONAL"
+  topics: SyllabusItem[];
+}
