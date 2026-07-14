@@ -13,7 +13,9 @@
         "accessSoldado": { "type": "boolean" },
         "isAdmin": { "type": "boolean" },
         "isApproved": { "type": "boolean" },
-        "createdAt": { "type": "string" }
+        "createdAt": { "type": "string" },
+        "plan": { "type": "string" },
+        "planEndDate": { "type": "string" }
       },
       "required": ["id", "name", "email", "accessCFO", "accessSoldado", "isAdmin", "isApproved", "createdAt"]
     },
@@ -89,6 +91,49 @@
         "questionsCorrect": { "type": "number" }
       },
       "required": ["id", "studentId", "date", "subject", "topic", "reasonForError", "questionsAttempted", "questionsCorrect"]
+    },
+    "CoordQuestion": {
+      "title": "CoordQuestion",
+      "description": "Inedited and previous exam questions uploaded by platforms coordinators",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "statement": { "type": "string" },
+        "options": { "type": "array" },
+        "correctOptionIndex": { "type": "number" },
+        "explanation": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "subject": { "type": "string" },
+        "topic": { "type": "string" },
+        "difficulty": { "type": "string" },
+        "year": { "type": "string" },
+        "banca": { "type": "string" }
+      },
+      "required": ["id", "statement", "options", "correctOptionIndex", "explanation", "createdAt", "subject"]
+    },
+    "PrivateStudentNotes": {
+      "title": "PrivateStudentNotes",
+      "description": "Encrypted or private student study notes",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "notes": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["studentId", "notes", "updatedAt"]
+    },
+    "PasswordResetRequest": {
+      "title": "PasswordResetRequest",
+      "description": "Password change/reset request from a student to the administrator",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "email", "name", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -115,6 +160,18 @@
     "/performance_logs_{studentId}/{logId}": {
       "schema": "PerformanceLog",
       "description": "Error tracking registers for the specified studentId"
+    },
+    "/coordination_questions/{questionId}": {
+      "schema": "CoordQuestion",
+      "description": "Coordination questions database"
+    },
+    "/private_student_notes/{studentId}": {
+      "schema": "PrivateStudentNotes",
+      "description": "Student private notes and diary"
+    },
+    "/password_reset_requests/{requestId}": {
+      "schema": "PasswordResetRequest",
+      "description": "Pending and completed password change requests"
     }
   }
 }

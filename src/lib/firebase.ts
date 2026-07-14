@@ -6,9 +6,23 @@ import {
   getDocs, 
   getDoc, 
   setDoc, 
-  deleteDoc
+  deleteDoc,
+  getDocFromServer,
+  query,
+  where
 } from "firebase/firestore";
-import { User, StudyCycle, WeeklyReport, ContentItem, SyllabusSection, PerformanceLog } from "../types";
+import { 
+  getAuth, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged, 
+  User as FirebaseUser,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updatePassword
+} from "firebase/auth";
+import { User, StudyCycle, WeeklyReport, ContentItem, SyllabusSection, PerformanceLog, CoordQuestion, PasswordResetRequest } from "../types";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDGQm2JPIEU4UkfkxKrF5dqPESKtp10XxQ",
@@ -24,6 +38,143 @@ const app = initializeApp(firebaseConfig);
 
 // Initialize Firestore with the custom databaseId provided in config
 export const db = getFirestore(app, "ai-studio-plataformadeestu-226b8942-b6d3-4981-aa96-003231131d4e");
+
+// Initialize Auth and Google Provider
+export const auth = getAuth(app);
+export const googleProvider = new GoogleAuthProvider();
+
+// We DO NOT add Gmail scopes globally to googleProvider because it triggers 
+// security warnings for normal students. They will be added dynamically when the admin authorizes Gmail.
+
+let isSigningIn = false;
+let cachedAccessToken: string | null = null;
+
+export const initAuth = (
+  onAuthSuccess?: (user: FirebaseUser, token: string) => void,
+  onAuthFailure?: () => void
+) => {
+  return onAuthStateChanged(auth, async (user: FirebaseUser | null) => {
+    if (user) {
+      const storedToken = localStorage.getItem("gmail_oauth_token");
+      if (storedToken) {
+        cachedAccessToken = storedToken;
+        if (onAuthSuccess) onAuthSuccess(user, storedToken);
+      } else if (cachedAccessToken) {
+        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      } else if (!isSigningIn) {
+        cachedAccessToken = null;
+        if (onAuthFailure) onAuthFailure();
+      }
+    } else {
+      cachedAccessToken = null;
+      localStorage.removeItem("gmail_oauth_token");
+      if (onAuthFailure) onAuthFailure();
+    }
+  });
+};
+
+// Standard Google login for normal users (NO GMAIL SCOPES)
+export const googleSignIn = async (): Promise<{ user: FirebaseUser; accessToken: string } | null> => {
+  try {
+    isSigningIn = true;
+    const cleanProvider = new GoogleAuthProvider();
+    // Default scopes only: profile and email
+    const result = await signInWithPopup(auth, cleanProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const token = credential?.accessToken || "";
+    return { user: result.user, accessToken: token };
+  } catch (error: any) {
+    console.error("Sign in error:", error);
+    throw error;
+  } finally {
+    isSigningIn = false;
+  }
+};
+
+// Special Google login with Gmail scopes for the Admin
+export const googleSignInWithGmail = async (): Promise<{ user: FirebaseUser; accessToken: string } | null> => {
+  try {
+    isSigningIn = true;
+    const gmailProvider = new GoogleAuthProvider();
+    gmailProvider.addScope("https://mail.google.com/");
+    gmailProvider.addScope("https://www.googleapis.com/auth/gmail.send");
+    gmailProvider.addScope("https://www.googleapis.com/auth/gmail.compose");
+    
+    const result = await signInWithPopup(auth, gmailProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (!credential?.accessToken) {
+      throw new Error("Failed to get access token from Firebase Auth");
+    }
+
+    cachedAccessToken = credential.accessToken;
+    localStorage.setItem("gmail_oauth_token", cachedAccessToken);
+    return { user: result.user, accessToken: cachedAccessToken };
+  } catch (error: any) {
+    console.error("Gmail authorization error:", error);
+    throw error;
+  } finally {
+    isSigningIn = false;
+  }
+};
+
+export const getAccessToken = async (): Promise<string | null> => {
+  if (!cachedAccessToken) {
+    cachedAccessToken = localStorage.getItem("gmail_oauth_token");
+  }
+  return cachedAccessToken;
+};
+
+export const logoutGoogle = async () => {
+  await auth.signOut();
+  cachedAccessToken = null;
+  localStorage.removeItem("gmail_oauth_token");
+};
+
+// Password reset with on-the-fly fallback for users that only exist in Firestore database
+export const sendResetPasswordEmail = async (email: string): Promise<boolean> => {
+  try {
+    await sendPasswordResetEmail(auth, email);
+    return true;
+  } catch (error: any) {
+    console.warn("Error in standard sendPasswordResetEmail, trying on-the-fly registration fallback:", error);
+    const errorCode = error.code || "";
+    const errorMessage = error.message || "";
+    
+    // Check if the user does not exist in Firebase Auth
+    if (
+      errorCode === "auth/user-not-found" || 
+      errorCode === "auth/invalid-credential" || 
+      errorMessage.includes("user-not-found") ||
+      errorMessage.includes("invalid-credential")
+    ) {
+      try {
+        // Create a secure temporary Firebase Auth account for them
+        const tempPassword = Math.random().toString(36).slice(-10) + "Aa1!";
+        await createUserWithEmailAndPassword(auth, email, tempPassword);
+        await auth.signOut(); // Sign out the newly created session
+        
+        // Try sending password reset email again now that they exist in Auth
+        await sendPasswordResetEmail(auth, email);
+        return true;
+      } catch (createErr) {
+        console.error("Failed to create user on-the-fly for password reset fallback:", createErr);
+      }
+    }
+    throw error;
+  }
+};
+
+// Email/Password login helper
+export const firebaseSignInWithEmailAndPassword = async (email: string, password: string): Promise<FirebaseUser> => {
+  const result = await signInWithEmailAndPassword(auth, email, password);
+  return result.user;
+};
+
+// Email/Password register helper
+export const firebaseCreateUserWithEmailAndPassword = async (email: string, password: string): Promise<FirebaseUser> => {
+  const result = await createUserWithEmailAndPassword(auth, email, password);
+  return result.user;
+};
 
 // --- FIRESTORE ERROR HANDLING MECHANISM ---
 export enum OperationType {
@@ -53,15 +204,19 @@ interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const firebaseUser = auth.currentUser;
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: null,
-      email: null,
-      emailVerified: null,
-      isAnonymous: null,
-      tenantId: null,
-      providerInfo: []
+      userId: firebaseUser ? firebaseUser.uid : null,
+      email: firebaseUser ? firebaseUser.email : null,
+      emailVerified: firebaseUser ? firebaseUser.emailVerified : null,
+      isAnonymous: firebaseUser ? firebaseUser.isAnonymous : null,
+      tenantId: firebaseUser ? firebaseUser.tenantId : null,
+      providerInfo: firebaseUser ? firebaseUser.providerData.map(p => ({
+        providerId: p.providerId,
+        email: p.email
+      })) : []
     },
     operationType,
     path
@@ -88,6 +243,36 @@ export async function fetchUsersFromFirestore(): Promise<User[]> {
     console.error("Error fetching users from Firestore:", error);
     return [];
   }
+}
+
+export async function fetchUserByEmailFromFirestore(email: string): Promise<User | null> {
+  const path = "users";
+  try {
+    const q = query(collection(db, path), where("email", "==", email.toLowerCase().trim()));
+    const querySnapshot = await getDocs(q);
+    if (!querySnapshot.empty) {
+      return querySnapshot.docs[0].data() as User;
+    }
+  } catch (error) {
+    console.error("Error fetching user by email from Firestore:", error);
+  }
+  return null;
+}
+
+export async function fetchUserFromFirestore(userId: string): Promise<User | null> {
+  const path = `users/${userId}`;
+  try {
+    const docSnap = await getDoc(doc(db, "users", userId));
+    if (docSnap.exists()) {
+      return docSnap.data() as User;
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+    console.error(`Error fetching user ${userId} from Firestore:`, error);
+  }
+  return null;
 }
 
 export async function saveUserToFirestore(user: User): Promise<void> {
@@ -145,6 +330,18 @@ export async function saveStudyCycleToFirestore(studentId: string, cycle: StudyC
   }
 }
 
+export async function deleteStudyCycleFromFirestore(studentId: string): Promise<void> {
+  const path = `study_cycles/${studentId}`;
+  try {
+    await deleteDoc(doc(db, "study_cycles", studentId));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+    console.error(`Error deleting study cycle for student ${studentId}:`, error);
+  }
+}
+
 // --- WEEKLY REPORTS (CORREIO) ---
 
 export async function fetchAllReportsFromFirestore(): Promise<WeeklyReport[]> {
@@ -161,6 +358,25 @@ export async function fetchAllReportsFromFirestore(): Promise<WeeklyReport[]> {
       handleFirestoreError(error, OperationType.LIST, path);
     }
     console.error("Error fetching reports from Firestore:", error);
+    return [];
+  }
+}
+
+export async function fetchStudentReportsFromFirestore(studentId: string): Promise<WeeklyReport[]> {
+  const path = "reports";
+  try {
+    const q = query(collection(db, "reports"), where("studentId", "==", studentId));
+    const querySnapshot = await getDocs(q);
+    const reports: WeeklyReport[] = [];
+    querySnapshot.forEach((docSnap) => {
+      reports.push(docSnap.data() as WeeklyReport);
+    });
+    return reports;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+    console.error(`Error fetching reports for student ${studentId}:`, error);
     return [];
   }
 }
@@ -308,3 +524,177 @@ export async function deletePerformanceLogFromFirestore(studentId: string, logId
     console.error(`Error deleting performance log ${logId} for ${studentId}:`, error);
   }
 }
+
+// --- COORDINATION QUESTIONS ---
+
+export async function fetchCoordQuestionsFromFirestore(): Promise<CoordQuestion[]> {
+  const path = "coordination_questions";
+  try {
+    const querySnapshot = await getDocs(collection(db, path));
+    const questions: CoordQuestion[] = [];
+    querySnapshot.forEach((docSnap) => {
+      questions.push(docSnap.data() as CoordQuestion);
+    });
+    // Sort oldest first (chronological order)
+    return questions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+    console.error("Error fetching coordination questions from Firestore:", error);
+    return [];
+  }
+}
+
+export async function saveCoordQuestionToFirestore(question: CoordQuestion): Promise<void> {
+  const path = `coordination_questions/${question.id}`;
+  try {
+    await setDoc(doc(db, "coordination_questions", question.id), question);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+    console.error(`Error saving coordination question ${question.id}:`, error);
+  }
+}
+
+export async function deleteCoordQuestionFromFirestore(questionId: string): Promise<void> {
+  const path = `coordination_questions/${questionId}`;
+  try {
+    await deleteDoc(doc(db, "coordination_questions", questionId));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+    console.error(`Error deleting coordination question ${questionId}:`, error);
+  }
+}
+
+// --- PRIVATE STUDENT NOTES ---
+
+export async function fetchPrivateStudentNotesFromFirestore(studentId: string): Promise<string> {
+  try {
+    const docSnap = await getDoc(doc(db, "private_student_notes", studentId));
+    if (docSnap.exists()) {
+      return docSnap.data().notes || "";
+    }
+    return "";
+  } catch (error) {
+    console.error(`Error fetching private notes for ${studentId}:`, error);
+    return "";
+  }
+}
+
+export async function savePrivateStudentNotesToFirestore(studentId: string, notes: string): Promise<void> {
+  try {
+    await setDoc(doc(db, "private_student_notes", studentId), {
+      studentId,
+      notes,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error saving private notes for ${studentId}:`, error);
+  }
+}
+
+// --- PASSWORD RESET REQUESTS ---
+
+export async function fetchPasswordResetRequestsFromFirestore(): Promise<PasswordResetRequest[]> {
+  const path = "password_reset_requests";
+  try {
+    const querySnapshot = await getDocs(collection(db, path));
+    const reqs: PasswordResetRequest[] = [];
+    querySnapshot.forEach((docSnap) => {
+      reqs.push(docSnap.data() as PasswordResetRequest);
+    });
+    return reqs;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+    console.error("Error fetching password reset requests from Firestore:", error);
+    return [];
+  }
+}
+
+export async function savePasswordResetRequestToFirestore(request: PasswordResetRequest): Promise<void> {
+  const path = `password_reset_requests/${request.id}`;
+  try {
+    await setDoc(doc(db, "password_reset_requests", request.id), request);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+    console.error(`Error saving password reset request ${request.id} to Firestore:`, error);
+  }
+}
+
+export async function deletePasswordResetRequestFromFirestore(requestId: string): Promise<void> {
+  const path = `password_reset_requests/${requestId}`;
+  try {
+    await deleteDoc(doc(db, "password_reset_requests", requestId));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+    console.error(`Error deleting password reset request ${requestId} from Firestore:`, error);
+  }
+}
+
+export async function adminUpdateUserPassword(
+  studentEmail: string,
+  oldPassword: string,
+  newPassword: string,
+  adminEmail: string,
+  adminPassword: string
+): Promise<void> {
+  const authInstance = auth;
+  try {
+    // 1. Sign in as student with their old password
+    const studentResult = await signInWithEmailAndPassword(authInstance, studentEmail, oldPassword);
+    if (studentResult.user) {
+      // 2. Update their password in Firebase Auth
+      await updatePassword(studentResult.user, newPassword);
+    }
+  } catch (error: any) {
+    console.warn("Could not sign in as student or update password. Attempting to create user on Firebase Auth in case they don't exist:", error);
+    
+    // If they didn't exist, we can register them now
+    try {
+      await createUserWithEmailAndPassword(authInstance, studentEmail, newPassword);
+    } catch (regErr) {
+      console.error("Failed to create user on-the-fly during admin password reset:", regErr);
+      throw new Error("Falha ao sincronizar a senha no serviço de autenticação do Firebase: " + (error.message || error));
+    }
+  } finally {
+    // 3. Always sign out the student session and restore the admin session
+    try {
+      await authInstance.signOut();
+    } catch (soErr) {
+      console.error("Error signing out student session:", soErr);
+    }
+    
+    // 4. Sign back in as the administrator
+    if (adminEmail && adminPassword) {
+      try {
+        await signInWithEmailAndPassword(authInstance, adminEmail, adminPassword);
+      } catch (adminLoginErr) {
+        console.error("Failed to restore administrator session in Firebase Auth:", adminLoginErr);
+        throw new Error("Sua senha foi alterada com sucesso no banco de dados, mas a sessão administrativa do Firebase foi desconectada. Por favor, faça login novamente.");
+      }
+    }
+  }
+}
+
+// Validate Connection to Firestore on startup
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if(error instanceof Error && error.message.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration.");
+    }
+  }
+}
+testConnection();
+

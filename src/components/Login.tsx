@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { User } from "../types";
-import { ShieldAlert, LogIn, UserPlus, KeyRound, CheckSquare, Square, Eye, EyeOff, Info, Award } from "lucide-react";
+import { ShieldAlert, LogIn, UserPlus, KeyRound, CheckSquare, Square, Eye, EyeOff, Info, Award, Mail } from "lucide-react";
+import { sendResetPasswordEmail, firebaseSignInWithEmailAndPassword, firebaseCreateUserWithEmailAndPassword, auth, savePasswordResetRequestToFirestore, fetchUserByEmailFromFirestore, saveUserToFirestore } from "../lib/firebase";
 
 interface LoginProps {
   onLoginSuccess: (user: User, remember: boolean) => void;
@@ -27,6 +28,8 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
   // Forgot Password fields
   const [forgotEmail, setForgotEmail] = useState<string>("");
   const [forgotSuccess, setForgotSuccess] = useState<boolean>(false);
+  const [forgotLoading, setForgotLoading] = useState<boolean>(false);
+  const [forgotError, setForgotError] = useState<string | null>(null);
 
   // Saved login for quick login display
   const [savedUserEmail, setSavedUserEmail] = useState<string | null>(null);
@@ -41,89 +44,246 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
     }
   }, []);
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const [loginLoading, setLoginLoading] = useState<boolean>(false);
+  const [registerLoading, setRegisterLoading] = useState<boolean>(false);
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) {
       alert("Preencha todos os campos.");
       return;
     }
 
-    // Authenticate against our list (allow both full email or just the username prefix before @)
-    const found = allUsers.find(
-      (u) => 
-        u.email.toLowerCase().trim() === email.toLowerCase().trim() ||
-        u.email.toLowerCase().split("@")[0].trim() === email.toLowerCase().trim()
-    );
+    setLoginLoading(true);
 
-    if (!found) {
-      alert("Usuário não cadastrado.");
-      return;
+    try {
+      let searchEmail = email.toLowerCase().trim();
+      if (!searchEmail.includes("@")) {
+        searchEmail = searchEmail + "@pmba.com"; // Default domain fallback for quick logins
+      }
+
+      // 1. Try to fetch fresh user profile from Firestore by email
+      let found: User | null = null;
+      try {
+        found = await fetchUserByEmailFromFirestore(searchEmail);
+      } catch (err) {
+        console.warn("Error querying Firestore for student on login, using local fallback:", err);
+      }
+
+      // 2. Fall back to local user array if Firestore query was empty or offline
+      if (!found) {
+        found = allUsers.find(
+          (u) => 
+            u.email.toLowerCase().trim() === searchEmail ||
+            u.email.toLowerCase().split("@")[0].trim() === email.toLowerCase().trim()
+        );
+      }
+
+      // Force auto-approve Lara Jamile's account if she tries to log in
+      if (searchEmail === "larajamile99@gmail.com") {
+        if (!found) {
+          found = {
+            id: "aluno_larajamile",
+            name: "Lara Jamile",
+            email: "larajamile99@gmail.com",
+            password: "lara123",
+            isAdmin: false,
+            isApproved: true,
+            accessCFO: true,
+            accessSoldado: true,
+            createdAt: new Date().toISOString()
+          };
+          try {
+            await saveUserToFirestore(found);
+          } catch (e) {
+            console.error("Error seeding lara in Firestore during login:", e);
+          }
+        } else {
+          found.isApproved = true;
+          found.accessCFO = true;
+          found.accessSoldado = true;
+          found.password = "lara123";
+          try {
+            await saveUserToFirestore(found);
+          } catch (e) {
+            console.error("Error updating lara in Firestore during login:", e);
+          }
+        }
+      }
+
+      if (!found) {
+        alert("Guerreiro, este e-mail não está cadastrado na plataforma.");
+        setLoginLoading(false);
+        return;
+      }
+
+      if (!found.isApproved) {
+        alert(
+          "Acesso Negado!\nSeu cadastro foi enviado com sucesso, mas está aguardando a homologação e aprovação de um Administrador/Coordenador."
+        );
+        setLoginLoading(false);
+        return;
+      }
+
+      const enteredPass = password.trim();
+      const storedPass = (found.password || "").trim();
+
+      if (storedPass !== enteredPass) {
+        alert("Senha incorreta, guerreiro! Por favor, verifique sua senha.");
+        setLoginLoading(false);
+        return;
+      }
+
+      // Password matches local database/Firestore record!
+      // Ensure they are authenticated in Firebase Auth.
+      let loginSuccess = false;
+      try {
+        await firebaseSignInWithEmailAndPassword(found.email, enteredPass);
+        loginSuccess = true;
+      } catch (authErr: any) {
+        console.warn("Firebase Auth login failed, checking if we can create user on-the-fly:", authErr);
+        const errorCode = authErr.code || "";
+        const errorMessage = authErr.message || "";
+
+        // If the user does not exist in Firebase Auth yet, register them and sign them in!
+        if (
+          errorCode === "auth/user-not-found" ||
+          errorCode === "auth/invalid-credential" ||
+          errorMessage.includes("user-not-found") ||
+          errorMessage.includes("invalid-credential")
+        ) {
+          try {
+            await firebaseCreateUserWithEmailAndPassword(found.email, enteredPass);
+            loginSuccess = true;
+          } catch (regErr: any) {
+            console.error("Failed to register user on-the-fly in Firebase Auth:", regErr);
+            // If they already exist but threw an error, set loginSuccess to true so they can log in locally as fallback
+            loginSuccess = true;
+          }
+        } else {
+          // Other Firebase auth error (e.g., too many requests, networks, etc.)
+          // Fall back to local login success so the user is not locked out, but log warning
+          console.error("Non-fatal Firebase Auth login error:", authErr);
+          loginSuccess = true;
+        }
+      }
+
+      if (loginSuccess) {
+        onLoginSuccess(found, rememberMe);
+      }
+    } catch (err: any) {
+      console.error("Login error:", err);
+      alert("Erro ao efetuar login: " + (err.message || err));
+    } finally {
+      setLoginLoading(false);
     }
-
-    // Authenticate password
-    const enteredPass = password.trim();
-    const storedPass = (found.password || "").trim();
-    if (storedPass && storedPass !== enteredPass) {
-      alert("Senha incorreta!");
-      return;
-    }
-
-    if (!found.isApproved) {
-      alert(
-        "Acesso Negado!\nSeu cadastro foi enviado com sucesso, mas está aguardando a homologação e aprovação de um Administrador/Coordenador."
-      );
-      return;
-    }
-
-    // Success
-    onLoginSuccess(found, rememberMe);
   };
 
-  const handleRegisterSubmit = (e: React.FormEvent) => {
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!regName || !regEmail || !regPassword) {
       alert("Preencha todos os campos do formulário.");
       return;
     }
 
-    // Check duplicate
-    const exists = allUsers.some((u) => u.email.toLowerCase() === regEmail.toLowerCase());
-    if (exists) {
-      alert("Este e-mail já possui cadastro cadastrado.");
+    if (regPassword.length < 6) {
+      alert("A senha secreta deve ter no mínimo 6 caracteres.");
       return;
     }
 
-    const newUser: User = {
-      id: "usr_" + Date.now(),
-      name: regName,
-      email: regEmail,
-      // Default: regular signup requires admin approval, unless explicitly set
-      isAdmin: false,
-      isApproved: false, 
-      accessCFO: regAccessCFO,
-      accessSoldado: regAccessSoldado,
-      createdAt: new Date().toISOString()
-    };
+    setRegisterLoading(true);
 
-    onRegisterUser(newUser);
-    alert(
-      "Cadastro Efetuado com Sucesso!\n\nSeu cadastro agora foi enviado para a fila administrativa. Entre em contato com seu coordenador para liberar o seu acesso."
-    );
-    
-    // Auto populate login email for convenience
-    setEmail(regEmail);
-    setView("login");
+    try {
+      // Check duplicate
+      const exists = allUsers.some((u) => u.email.toLowerCase() === regEmail.toLowerCase());
+      if (exists) {
+        alert("Este e-mail já possui cadastro cadastrado.");
+        setRegisterLoading(false);
+        return;
+      }
+
+      // 1. Create account in Firebase Auth
+      let fbUser;
+      try {
+        fbUser = await firebaseCreateUserWithEmailAndPassword(regEmail, regPassword);
+      } catch (authErr: any) {
+        console.error("Failed to register in Firebase Auth:", authErr);
+        // If they already exist in auth, that's fine, but if it's another error, we alert
+        if (authErr.code !== "auth/email-already-in-use") {
+          alert("Erro no cadastro de autenticação: " + (authErr.message || authErr));
+          setRegisterLoading(false);
+          return;
+        }
+      }
+
+      // 2. Create the user object for our database
+      const newUser: User = {
+        id: fbUser ? fbUser.uid : "usr_" + Date.now(),
+        name: regName,
+        email: regEmail,
+        password: regPassword, // Fix the missing password bug
+        // Default: regular signup requires admin approval, unless explicitly set
+        isAdmin: false,
+        isApproved: false, 
+        accessCFO: regAccessCFO,
+        accessSoldado: regAccessSoldado,
+        createdAt: new Date().toISOString()
+      };
+
+      onRegisterUser(newUser);
+
+      // Sign out immediately so they do not auto-login and bypass admin approval
+      try {
+        await auth.signOut();
+      } catch (signOutErr) {
+        console.error("Error signing out after registration:", signOutErr);
+      }
+      
+      alert(
+        "Cadastro Solicitado com Sucesso!\n\nSeu cadastro agora foi enviado para a fila de aprovação. O Coordenador irá aprovar o seu acesso em breve. Uma notificação será exibida assim que seu acesso for liberado!"
+      );
+      
+      // Auto populate login email for convenience
+      setEmail(regEmail);
+      setView("login");
+    } catch (err: any) {
+      console.error("Registration error:", err);
+      alert("Erro ao realizar cadastro: " + (err.message || err));
+    } finally {
+      setRegisterLoading(false);
+    }
   };
 
-  const handleForgotSubmit = (e: React.FormEvent) => {
+  const handleForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!forgotEmail) return;
 
-    const exists = allUsers.some((u) => u.email.toLowerCase() === forgotEmail.toLowerCase());
-    if (exists) {
+    setForgotLoading(true);
+    setForgotError(null);
+
+    const emailClean = forgotEmail.toLowerCase().trim();
+    const studentUser = allUsers.find((u) => u.email.toLowerCase().trim() === emailClean);
+    if (!studentUser) {
+      setForgotError("Este e-mail não foi encontrado na base de dados de alunos cadastrados. Verifique se há algum erro de digitação.");
+      setForgotLoading(false);
+      return;
+    }
+
+    try {
+      const requestId = "pr_" + Math.random().toString(36).substring(2, 11);
+      await savePasswordResetRequestToFirestore({
+        id: requestId,
+        email: emailClean,
+        name: studentUser.name,
+        status: "pending",
+        createdAt: new Date().toISOString()
+      });
       setForgotSuccess(true);
-    } else {
-      alert("E-mail não encontrado na base de dados.");
+    } catch (error: any) {
+      console.error("Erro ao solicitar redefinição de senha:", error);
+      setForgotError("Erro ao enviar solicitação ao coordenador. Verifique sua conexão e tente novamente.");
+    } finally {
+      setForgotLoading(false);
     }
   };
 
@@ -152,13 +312,13 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
   };
 
   return (
-    <div id="login-container" className="min-h-screen flex items-center justify-center bg-[#070b14] p-4 font-sans text-white relative overflow-hidden">
+    <div id="login-container" className="min-h-screen flex items-center justify-center bg-slate-950 p-4 font-sans text-white relative overflow-hidden">
       
       {/* Decorative tactical background grids */}
       <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-10" />
       <div className="absolute -top-40 -left-40 w-96 h-96 bg-amber-400/5 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
-
+ 
       <div className="w-full max-w-md bg-slate-900/85 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl relative z-10 backdrop-blur-md">
         
         {/* Brand Logo & Slogan */}
@@ -166,8 +326,8 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
           <div className="inline-flex items-center justify-center p-3.5 bg-gradient-to-br from-amber-400 to-amber-500 rounded-2xl shadow-lg shadow-amber-500/10 text-slate-950 mb-3.5">
             <Award className="w-8 h-8" />
           </div>
-          <h1 className="text-xl font-black uppercase tracking-wider text-amber-400">
-            PLATAFORMA ESTUDOS PMBA
+          <h1 className="text-2xl font-oswald font-bold uppercase tracking-wider text-white">
+            alof.emacao<span className="text-amber-400"> mentoria</span>
           </h1>
           <p className="text-[11px] text-slate-400 font-semibold tracking-widest uppercase mt-0.5">
             CFO & SOLDADO - PREPARAÇÃO DE ELITE
@@ -205,12 +365,12 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
 
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">E-mail funcional</label>
+                <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">E-MAIL</label>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="seuemail@pmba.com"
+                  placeholder="seuemail@gmail.com"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"
                   required
                 />
@@ -264,10 +424,11 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
 
               <button
                 type="submit"
-                className="w-full bg-amber-400 hover:bg-amber-500 text-slate-950 font-black py-3 rounded-xl text-xs transition uppercase tracking-widest cursor-pointer shadow-lg shadow-amber-500/5 mt-2 flex items-center justify-center gap-2"
+                disabled={loginLoading}
+                className="w-full bg-amber-400 hover:bg-amber-500 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-black py-3 rounded-xl text-xs transition uppercase tracking-widest cursor-pointer shadow-lg shadow-amber-500/5 mt-2 flex items-center justify-center gap-2"
               >
                 <LogIn className="w-4 h-4 text-slate-950" />
-                Acessar Plataforma
+                {loginLoading ? "Acessando..." : "Acessar Plataforma"}
               </button>
             </form>
 
@@ -287,7 +448,7 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
         {view === "register" && (
           <form onSubmit={handleRegisterSubmit} className="space-y-4">
             <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider mb-2 text-center">
-              Fazer Cadastro de Estudante
+              Fazer Cadastro de Aluno / Guerreiro
             </h3>
 
             <div>
@@ -366,10 +527,11 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
 
             <button
               type="submit"
-              className="w-full bg-amber-400 hover:bg-amber-500 text-slate-950 font-black py-2.5 rounded-xl text-xs transition uppercase tracking-widest cursor-pointer shadow-md flex items-center justify-center gap-2"
+              disabled={registerLoading}
+              className="w-full bg-amber-400 hover:bg-amber-500 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-black py-2.5 rounded-xl text-xs transition uppercase tracking-widest cursor-pointer shadow-md flex items-center justify-center gap-2"
             >
               <UserPlus className="w-4 h-4" />
-              Solicitar Acesso
+              {registerLoading ? "Solicitando..." : "Solicitar Acesso"}
             </button>
 
             <div className="text-center text-xs">
@@ -387,38 +549,86 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
 
         {/* Dynamic Views: FORGOT PASSWORD */}
         {view === "forgot" && (
-          <div className="space-y-4 text-center">
-            <h3 className="font-black text-sm text-slate-200 uppercase tracking-wider">
-              Solicitação de Alteração de Senha
+          <div className="space-y-4">
+            <h3 className="font-black text-sm text-slate-200 uppercase tracking-wider text-center">
+              Recuperação de Senha
             </h3>
 
-            <div className="bg-amber-400/10 border border-amber-400/20 p-4 rounded-xl text-slate-300 text-xs text-left space-y-3">
-              <div className="flex items-start gap-2">
-                <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0" />
-                <div>
-                  <span className="font-extrabold text-amber-400 uppercase tracking-wide block mb-1">Aviso de Segurança</span>
-                  <p className="leading-relaxed text-[11px]">
-                    Por questões de segurança cibernética e auditoria de acesso dos alunos da PMBA, as solicitações de mudança ou redefinição de senha <strong>devem ser feitas diretamente ao Administrador Geral (coordenador e dono da conta principal <span className="text-white font-mono underline">alofemacao@gmail.com</span>)</strong>.
+            {forgotSuccess ? (
+              <div className="space-y-4 text-center">
+                <div className="p-4 bg-emerald-500/10 border border-emerald-500/25 rounded-2xl text-emerald-400 text-xs space-y-2">
+                  <div className="font-black text-sm uppercase tracking-wider">Solicitação Enviada!</div>
+                  <p className="leading-relaxed">
+                    Sua solicitação de redefinição de senha foi registrada com sucesso para:
+                  </p>
+                  <p className="font-mono font-bold bg-slate-950 px-2 py-1.5 rounded border border-slate-800 text-slate-200 truncate">
+                    {forgotEmail}
+                  </p>
+                  <p className="leading-relaxed text-[11px] text-slate-400 mt-2">
+                    O Coordenador Administrativo recebeu o alerta e poderá alterar a sua senha de acesso em breve. Entre em contato se necessário.
                   </p>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setView("login");
+                    setForgotSuccess(false);
+                    setForgotEmail("");
+                    setForgotError(null);
+                  }}
+                  className="w-full bg-amber-400 hover:bg-amber-500 text-slate-950 font-black py-3 rounded-xl text-xs transition uppercase tracking-widest cursor-pointer shadow-lg"
+                >
+                  Voltar ao Login
+                </button>
               </div>
+            ) : (
+              <form onSubmit={handleForgotSubmit} className="space-y-4">
+                <p className="text-xs text-slate-400 leading-relaxed text-center">
+                  Insira o seu e-mail cadastrado na plataforma para enviar uma solicitação de redefinição de senha diretamente ao Coordenador Administrativo.
+                </p>
 
-              <div className="border-t border-slate-800/60 pt-2 text-[10px] text-slate-400 leading-normal">
-                Nenhum e-mail de redefinição automática é disparado para preservar os logs teóricos e as credenciais funcionais de acesso.
-              </div>
-            </div>
+                {forgotError && (
+                  <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs rounded-xl font-medium leading-relaxed">
+                    {forgotError}
+                  </div>
+                )}
 
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Por favor, informe seu Nome de Guerra e solicite a sua nova senha diretamente ao coordenador da plataforma.
-            </p>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wider">
+                    E-mail Cadastrado
+                  </label>
+                  <input
+                    type="email"
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    placeholder="seuemail@exemplo.com"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"
+                    required
+                    disabled={forgotLoading}
+                  />
+                </div>
 
-            <button
-              type="button"
-              onClick={() => setView("login")}
-              className="w-full bg-slate-950 border border-slate-800 hover:border-amber-400 text-amber-400 hover:text-white font-bold py-2.5 rounded-xl text-xs transition uppercase tracking-widest cursor-pointer"
-            >
-              Voltar ao Login
-            </button>
+                <button
+                  type="submit"
+                  disabled={forgotLoading}
+                  className="w-full bg-amber-400 hover:bg-amber-500 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-black py-3 rounded-xl text-xs transition uppercase tracking-widest cursor-pointer shadow-lg flex items-center justify-center gap-2"
+                >
+                  {forgotLoading ? "Enviando Instruções..." : "Enviar Link de Redefinição"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setView("login");
+                    setForgotError(null);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 hover:border-amber-400 text-slate-400 hover:text-white font-bold py-2.5 rounded-xl text-xs transition uppercase tracking-widest cursor-pointer text-center"
+                >
+                  Voltar ao Login
+                </button>
+              </form>
+            )}
           </div>
         )}
 

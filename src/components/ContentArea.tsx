@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { ContentItem, User } from "../types";
-import { BookOpen, Video, FileText, ExternalLink, Plus, Edit2, Trash2, Tag, ShieldCheck, AlertCircle, ClipboardList } from "lucide-react";
+import { BookOpen, Video, FileText, ExternalLink, Plus, Edit2, Trash2, Tag, ShieldCheck, AlertCircle, ClipboardList, Maximize2, Minimize2, Download } from "lucide-react";
 import { 
   fetchSharedContentFromFirestore, 
   saveContentItemToFirestore, 
@@ -10,13 +10,21 @@ import {
 interface ContentAreaProps {
   currentUser: User;
   onlySimulados?: boolean;
+  sidebarMinimized?: boolean;
+  setSidebarMinimized?: (minimized: boolean) => void;
 }
 
-export default function ContentArea({ currentUser, onlySimulados = false }: ContentAreaProps) {
+export default function ContentArea({ 
+  currentUser, 
+  onlySimulados = false,
+  sidebarMinimized = false,
+  setSidebarMinimized
+}: ContentAreaProps) {
   const [items, setItems] = useState<ContentItem[]>([]);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [selectedTopicFilter, setSelectedTopicFilter] = useState<string>("todos");
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
+  const [selectedReadingItem, setSelectedReadingItem] = useState<ContentItem | null>(null);
 
   const getYouTubeEmbedUrl = (videoUrl: string) => {
     try {
@@ -41,6 +49,7 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
   const [category, setCategory] = useState<"cfo" | "soldado" | "both">("both");
   const [topic, setTopic] = useState<string>("");
   const [subtopic, setSubtopic] = useState<string>("");
+  const [additionalPdfs, setAdditionalPdfs] = useState<{ name: string; url: string }[]>([]);
 
   // Load content
   useEffect(() => {
@@ -83,6 +92,7 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
     setCategory("both");
     setTopic("");
     setSubtopic("");
+    setAdditionalPdfs([]);
   };
 
   const handleOpenEdit = (item: ContentItem) => {
@@ -95,6 +105,7 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
     setCategory(item.category);
     setTopic(item.topic || "");
     setSubtopic(item.subtopic || "");
+    setAdditionalPdfs(item.additionalPdfs || []);
   };
 
   const handleSaveContent = async (e: React.FormEvent) => {
@@ -105,6 +116,10 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
     const finalSubtitle = subtitle.trim() || "Material complementar e de suporte ao cronograma de estudos.";
     const finalUrl = url.trim() || "";
     const finalTopic = topic.trim() || "Geral / Outros";
+
+    const filteredPdfs = type === "pdf" 
+      ? additionalPdfs.filter(p => p.name.trim() && p.url.trim()) 
+      : undefined;
 
     if (editingId) {
       // Edit
@@ -118,7 +133,8 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
             url: finalUrl,
             category,
             topic: finalTopic,
-            subtopic: subtopic.trim() || undefined
+            subtopic: subtopic.trim() || undefined,
+            additionalPdfs: filteredPdfs
           };
         }
         return item;
@@ -146,7 +162,8 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
         category,
         createdAt: new Date().toISOString(),
         topic: finalTopic,
-        subtopic: subtopic.trim() || undefined
+        subtopic: subtopic.trim() || undefined,
+        additionalPdfs: filteredPdfs
       };
       saveItems([newItem, ...items]);
       setIsEditing(false);
@@ -163,6 +180,7 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
     setUrl("");
     setTopic("");
     setSubtopic("");
+    setAdditionalPdfs([]);
   };
 
   const handleDeleteContent = (id: string) => {
@@ -358,15 +376,82 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
             </div>
 
             <div>
-              <label className="block text-xs text-slate-400 mb-1">Link URL</label>
+              <label className="block text-xs text-slate-400 mb-1">
+                {type === "pdf" ? "Link do PDF Principal" : "Link URL"}
+              </label>
               <input
                 type="url"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="Ex: https://www.youtube.com/watch?..."
+                placeholder={type === "pdf" ? "Ex: https://meu-drive.com/resumo.pdf" : "Ex: https://www.youtube.com/watch?..."}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400"
               />
             </div>
+
+            {/* ADDITIONAL PDFs ATTACHMENTS */}
+            {type === "pdf" && (
+              <div className="space-y-3 border-t border-slate-800 pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                    <FileText className="w-3.5 h-3.5" />
+                    Anexar PDFs Adicionais / Suporte
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAdditionalPdfs([...additionalPdfs, { name: "", url: "" }])}
+                    className="text-[10px] bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 px-2 py-1 rounded-lg font-bold flex items-center gap-1 transition border border-emerald-500/20 cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Incluir Outro PDF</span>
+                  </button>
+                </div>
+
+                {additionalPdfs.length === 0 ? (
+                  <p className="text-[10px] text-slate-500 italic">Nenhum PDF adicional anexado. Você pode cadastrar múltiplos PDFs juntos nesta mesma publicação.</p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {additionalPdfs.map((pdf, pIdx) => (
+                      <div key={pIdx} className="bg-slate-950 p-2.5 rounded-xl border border-slate-850 flex items-start gap-2 relative">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 flex-1">
+                          <input
+                            type="text"
+                            value={pdf.name}
+                            required
+                            placeholder="Nome do PDF (Ex: Resumo Aula 01)"
+                            onChange={(e) => {
+                              const updated = [...additionalPdfs];
+                              updated[pIdx].name = e.target.value;
+                              setAdditionalPdfs(updated);
+                            }}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-400"
+                          />
+                          <input
+                            type="url"
+                            value={pdf.url}
+                            required
+                            placeholder="URL do PDF (Ex: https://...)"
+                            onChange={(e) => {
+                              const updated = [...additionalPdfs];
+                              updated[pIdx].url = e.target.value;
+                              setAdditionalPdfs(updated);
+                            }}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-400"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAdditionalPdfs(additionalPdfs.filter((_, idx) => idx !== pIdx))}
+                          className="p-1.5 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-lg hover:bg-rose-500/20 hover:text-rose-300 transition shrink-0 cursor-pointer"
+                          title="Remover"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
@@ -542,12 +627,51 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
                       {item.subtitle}
                     </p>
                   )}
+
+                  {/* ADDITIONAL PDFs (DOWNLOAD DIRECTLY FROM THE PLATFORM) */}
+                  {item.type === "pdf" && item.additionalPdfs && item.additionalPdfs.length > 0 && (
+                    <div className="mt-3 p-2.5 rounded-xl bg-slate-950 border border-slate-850/80 space-y-2">
+                      <p className="text-[9px] font-extrabold uppercase text-slate-400 tracking-wider flex items-center gap-1">
+                        <FileText className="w-3 h-3 text-emerald-400 animate-pulse" />
+                        PDFs de Suporte / Anexos ({item.additionalPdfs.length}):
+                      </p>
+                      <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                        {item.additionalPdfs.map((pdf, idx) => (
+                          <a
+                            key={idx}
+                            href={pdf.url}
+                            target="_blank"
+                            download
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-850 hover:border-emerald-500/30 hover:bg-slate-850/40 transition text-[11px] text-slate-300 group/pdf cursor-pointer"
+                          >
+                            <span className="truncate max-w-[160px] font-bold text-slate-300 group-hover/pdf:text-amber-400 transition-colors">
+                              {pdf.name || `PDF Anexo #${idx + 1}`}
+                            </span>
+                            <span className="shrink-0 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded text-[8px] font-black tracking-wider flex items-center gap-1 group-hover/pdf:bg-emerald-500 group-hover/pdf:text-slate-950 transition">
+                              <Download className="w-2.5 h-2.5" />
+                              BAIXAR
+                            </span>
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Actions Footer */}
                 <div className="flex items-center justify-between mt-5 border-t border-slate-800/60 pt-4">
                   <div className="flex items-center gap-3">
-                    {item.type === "simulado" ? (
+                    {item.contentMarkdown ? (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReadingItem(item)}
+                        className="px-4 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md shadow-amber-950/20"
+                      >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        <span>Ler Material Estudo</span>
+                      </button>
+                    ) : item.type === "simulado" ? (
                       item.url ? (
                         <a
                           href={item.url}
@@ -557,6 +681,21 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
                         >
                           <ClipboardList className="w-3.5 h-3.5" />
                           <span>Iniciar Simulado</span>
+                        </a>
+                      ) : (
+                        <span className="text-xs text-slate-500 italic">Sem Link</span>
+                      )
+                    ) : item.type === "pdf" ? (
+                      item.url ? (
+                        <a
+                          href={item.url}
+                          target="_blank"
+                          download
+                          rel="noopener noreferrer"
+                          className="px-4 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md shadow-emerald-950/20"
+                        >
+                          <Download className="w-3.5 h-3.5 animate-bounce" />
+                          <span>Baixar PDF Principal</span>
                         </a>
                       ) : (
                         <span className="text-xs text-slate-500 italic">Sem Link</span>
@@ -747,6 +886,248 @@ export default function ContentArea({ currentUser, onlySimulados = false }: Cont
           </div>
         )}
       </div>
+
+      {/* Embedded Rich Markdown Document Reader Modal */}
+      {selectedReadingItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+          <div 
+            className={`bg-slate-900 border border-slate-800 flex flex-col overflow-hidden text-white shadow-2xl transition-all duration-300 ${
+              sidebarMinimized 
+                ? "max-w-5xl w-full h-[90vh] max-h-[90vh] rounded-3xl" 
+                : "max-w-3xl w-full max-h-[85vh] rounded-3xl"
+            }`}
+          >
+            {/* Header */}
+            <div className="p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/30">
+              <div className="flex-1 min-w-0 pr-4">
+                <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest block mb-1">
+                  Resumo de Elite • Tenente IA
+                </span>
+                <h3 className="text-lg font-extrabold text-white leading-snug truncate">
+                  {selectedReadingItem.title}
+                </h3>
+                <p className="text-xs text-slate-400 mt-1 truncate">
+                  {selectedReadingItem.subtitle}
+                </p>
+              </div>
+              
+              <div className="flex items-center gap-2 shrink-0">
+                {setSidebarMinimized && (
+                  <button
+                    onClick={() => setSidebarMinimized(!sidebarMinimized)}
+                    className="p-1.5 rounded-lg bg-slate-850 hover:bg-slate-800 hover:text-amber-400 border border-slate-800 text-slate-300 transition-colors flex items-center gap-1 text-[10px] font-black uppercase tracking-wider cursor-pointer"
+                    title={sidebarMinimized ? "Sair da Tela Cheia" : "Modo Leitura Focada (Tela Cheia)"}
+                  >
+                    {sidebarMinimized ? (
+                      <>
+                        <Minimize2 className="w-3.5 h-3.5 text-amber-400" />
+                        <span className="hidden sm:inline">Sair Foco</span>
+                      </>
+                    ) : (
+                      <>
+                        <Maximize2 className="w-3.5 h-3.5 text-slate-400" />
+                        <span className="hidden sm:inline">Tela Cheia</span>
+                      </>
+                    )}
+                  </button>
+                )}
+                
+                <button
+                  onClick={() => setSelectedReadingItem(null)}
+                  className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800/60 transition cursor-pointer font-extrabold text-base leading-none"
+                  title="Fechar"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Document Content */}
+            <div className={`p-6 overflow-y-auto space-y-2 select-text transition-all duration-300 ${
+              sidebarMinimized ? "max-h-[75vh]" : "max-h-[60vh]"
+            }`}>
+              {(() => {
+                const text = (selectedReadingItem.contentMarkdown || "").replace(/<br\s*\/?>/gi, "\n");
+                
+                const parseBoldText = (str: string) => {
+                  const parts = str.split(/\*\*(.*?)\*\*/g);
+                  return parts.flatMap((part, i) => {
+                    if (i % 2 === 1) {
+                      return [<strong key={`b-${i}`} className="text-amber-400 font-black">{part}</strong>];
+                    }
+                    const subparts = part.split(/\*(.*?)\*/g);
+                    return subparts.map((subpart, j) => {
+                      if (j % 2 === 1) {
+                        return <strong key={`s-${i}-${j}`} className="text-amber-400 font-bold italic">{subpart}</strong>;
+                      }
+                      return subpart;
+                    });
+                  });
+                };
+
+                const lines = text.split("\n");
+                const elements: React.ReactNode[] = [];
+                let inTable = false;
+                let tableRows: string[][] = [];
+                let inList = false;
+                let listItems: React.ReactNode[] = [];
+
+                const flushList = (key: string | number) => {
+                  if (inList && listItems.length > 0) {
+                    elements.push(
+                      <ul key={`list-${key}`} className="list-disc pl-5 my-2 space-y-1">
+                        {listItems}
+                      </ul>
+                    );
+                    listItems = [];
+                    inList = false;
+                  }
+                };
+
+                const flushTable = (key: string | number) => {
+                  if (inTable && tableRows.length > 0) {
+                    const cleanRows = tableRows.filter(row => {
+                      return !row.every(cell => cell.trim().match(/^[:-|-]*$/));
+                    });
+
+                    if (cleanRows.length > 0) {
+                      const headers = cleanRows[0];
+                      const bodyRows = cleanRows.slice(1);
+
+                      elements.push(
+                        <div key={`table-container-${key}`} className="overflow-x-auto my-4 border border-slate-800 rounded-2xl bg-slate-950/40">
+                          <table className="w-full text-left border-collapse text-[11px]">
+                            <thead>
+                              <tr className="border-b border-slate-800 bg-slate-950 text-amber-400 font-bold uppercase">
+                                {headers.map((cell, cIdx) => (
+                                  <th key={cIdx} className="p-3 font-extrabold uppercase tracking-wider">{cell.trim()}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/40">
+                              {bodyRows.map((row, rIdx) => (
+                                <tr key={rIdx} className="hover:bg-slate-900/30 transition-colors">
+                                  {row.map((cell, cIdx) => (
+                                    <td key={cIdx} className="p-3 text-slate-300 whitespace-pre-wrap leading-relaxed">{parseBoldText(cell.trim())}</td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    }
+                    tableRows = [];
+                    inTable = false;
+                  }
+                };
+
+                lines.forEach((line, idx) => {
+                  const trimmed = line.trim();
+
+                  if (trimmed.startsWith("|")) {
+                    flushList(idx);
+                    const cells = line.split("|").slice(1, -1);
+                    if (cells.length > 0) {
+                      tableRows.push(cells);
+                      inTable = true;
+                    }
+                    return;
+                  }
+
+                  if (inTable) {
+                    flushTable(idx);
+                  }
+
+                  if (trimmed.startsWith("###")) {
+                    flushList(idx);
+                    elements.push(
+                      <h4 key={idx} className="text-xs font-black text-amber-400 uppercase tracking-wider mt-4 mb-2 font-mono">
+                        {trimmed.replace(/^###\s*/, "")}
+                      </h4>
+                    );
+                    return;
+                  }
+                  if (trimmed.startsWith("##")) {
+                    flushList(idx);
+                    elements.push(
+                      <h3 key={idx} className="text-sm font-black text-white uppercase tracking-wider mt-5 mb-2.5 border-b border-slate-800 pb-1 font-mono">
+                        {trimmed.replace(/^##\s*/, "")}
+                      </h3>
+                    );
+                    return;
+                  }
+                  if (trimmed.startsWith("#")) {
+                    flushList(idx);
+                    elements.push(
+                      <h2 key={idx} className="text-base font-black text-amber-500 uppercase tracking-widest mt-6 mb-3">
+                        {trimmed.replace(/^#\s*/, "")}
+                      </h2>
+                    );
+                    return;
+                  }
+
+                  if (trimmed.startsWith("-") || trimmed.startsWith("*")) {
+                    const textContent = trimmed.substring(1).trim();
+                    if (textContent !== "" && !textContent.match(/^[-\*]*$/)) {
+                      listItems.push(
+                        <li key={`li-${idx}`} className="text-xs text-slate-300 mb-1 leading-relaxed pl-1 py-1">
+                          {parseBoldText(textContent)}
+                        </li>
+                      );
+                      inList = true;
+                      return;
+                    }
+                  }
+
+                  if (trimmed === "") {
+                    flushList(idx);
+                    elements.push(<div key={idx} className="h-2" />);
+                    return;
+                  }
+
+                  flushList(idx);
+                  elements.push(
+                    <p key={idx} className="text-xs text-slate-300 leading-relaxed my-2">
+                      {parseBoldText(trimmed)}
+                    </p>
+                  );
+                });
+
+                flushList("final");
+                flushTable("final");
+
+                return elements;
+              })()}
+            </div>
+
+            {/* Footer with actions */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/40 flex items-center justify-between">
+              <span className="text-[10px] text-slate-500 font-mono">
+                Criado em {new Date(selectedReadingItem.createdAt).toLocaleDateString("pt-BR")}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(selectedReadingItem.contentMarkdown || "");
+                    alert("Copiado para a área de transferência!");
+                  }}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition cursor-pointer"
+                >
+                  Copiar Texto
+                </button>
+                <button
+                  onClick={() => setSelectedReadingItem(null)}
+                  className="px-5 py-2 bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black rounded-xl transition cursor-pointer"
+                >
+                  Concluir Leitura
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );

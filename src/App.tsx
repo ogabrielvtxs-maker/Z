@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { User, WeeklyReport } from "./types";
+import { initialSyllabusData } from "./data/syllabusData";
 import Login from "./components/Login";
 import AdminPanel from "./components/AdminPanel";
 import WeeklyCycle from "./components/WeeklyCycle";
@@ -7,12 +8,19 @@ import Pomodoro from "./components/Pomodoro";
 import PerformanceStats from "./components/PerformanceStats";
 import VerticalSyllabus from "./components/VerticalSyllabus";
 import ContentArea from "./components/ContentArea";
+import CoordinatorQuestions from "./components/CoordinatorQuestions";
+import { stripMarkdownAsterisks } from "./lib/textCleanup";
 import { 
   fetchUsersFromFirestore, 
+  fetchUserFromFirestore,
   saveUserToFirestore, 
   deleteUserFromFirestore,
-  fetchAllReportsFromFirestore
+  fetchAllReportsFromFirestore,
+  fetchSharedContentFromFirestore,
+  fetchStudentReportsFromFirestore,
+  auth
 } from "./lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 import { 
   LogOut, 
   Calendar, 
@@ -27,7 +35,9 @@ import {
   Bell,
   Menu,
   X,
-  ClipboardList
+  ClipboardList,
+  HelpCircle,
+  History
 } from "lucide-react";
 
 const INITIAL_USERS: User[] = [
@@ -35,6 +45,17 @@ const INITIAL_USERS: User[] = [
     id: "usr_admin",
     name: "Coordenador Geral (Admin)",
     email: "alofemacao@gmail.com",
+    password: "2004biel",
+    isAdmin: true,
+    isApproved: true,
+    accessCFO: true,
+    accessSoldado: true,
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "usr_admin_gabriel",
+    name: "Coordenador Gabriel (Admin)",
+    email: "gabrielj0s239@gmail.com",
     password: "2004biel",
     isAdmin: true,
     isApproved: true,
@@ -63,21 +84,268 @@ const INITIAL_USERS: User[] = [
     accessCFO: true,
     accessSoldado: false,
     createdAt: new Date().toISOString()
+  },
+  {
+    id: "aluno_larajamile",
+    name: "Lara Jamile",
+    email: "larajamile99@gmail.com",
+    password: "lara123",
+    isAdmin: false,
+    isApproved: true,
+    accessCFO: true,
+    accessSoldado: true,
+    createdAt: new Date().toISOString()
   }
 ];
 
 export default function App() {
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<string>("cycle");
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [sidebarMinimized, setSidebarMinimized] = useState<boolean>(false);
   
   // Student reports addressed to them
   const [myReports, setMyReports] = useState<WeeklyReport[]>([]);
 
-  // Initialize Users list and active session
+  // Syllabus progress and login tracking states
+  const [syllabusProgressPercent, setSyllabusProgressPercent] = useState<number>(0);
+  const [lastLoginDisplay, setLastLoginDisplay] = useState<string>("");
+
+  const formatLastLogin = (isoString?: string) => {
+    if (!isoString) return "Primeiro acesso";
+    try {
+      const date = new Date(isoString);
+      const pad = (num: number) => String(num).padStart(2, "0");
+      const day = pad(date.getDate());
+      const month = pad(date.getMonth() + 1);
+      const year = date.getFullYear();
+      const hours = pad(date.getHours());
+      const minutes = pad(date.getMinutes());
+      return `${day}/${month}/${year} às ${hours}:${minutes}`;
+    } catch (e) {
+      return "Primeiro acesso";
+    }
+  };
+
+  const registerSessionEntry = async (user: User) => {
+    if (!user) return;
+    
+    const sessionKey = `session_registered_${user.id}`;
+    const displayKey = `previous_login_display_${user.id}`;
+    
+    const isSessionRegistered = sessionStorage.getItem(sessionKey);
+    let prevLoginTime = "";
+    
+    if (isSessionRegistered) {
+      prevLoginTime = sessionStorage.getItem(displayKey) || "";
+    } else {
+      // First load in this browser tab: capture previous timestamp
+      prevLoginTime = user.lastLoginAt || "";
+      if (prevLoginTime) {
+        sessionStorage.setItem(displayKey, prevLoginTime);
+      }
+      
+      // Update lastLoginAt to current ISO timestamp
+      const nowStr = new Date().toISOString();
+      const updatedUser: User = {
+        ...user,
+        previousLoginAt: prevLoginTime,
+        lastLoginAt: nowStr
+      };
+      
+      // Save locally
+      setCurrentUser(updatedUser);
+      localStorage.setItem("active_user_session", JSON.stringify(updatedUser));
+      
+      // Sync on the main users list
+      setAllUsers(prev => prev.map(u => u.id === user.id ? updatedUser : u));
+      
+      // Sync to Firestore
+      try {
+        await saveUserToFirestore(updatedUser);
+      } catch (e) {
+        console.error("Error updating user session timestamp:", e);
+      }
+      
+      sessionStorage.setItem(sessionKey, "true");
+    }
+    
+    setLastLoginDisplay(prevLoginTime);
+  };
+
+  // Synchronise and calculate Verticalised Syllabus progress
   useEffect(() => {
-    // Load users list from localStorage or pre-seed
+    if (!currentUser || currentUser.isAdmin) return;
+
+    const updateProgress = () => {
+      const saved = localStorage.getItem(`syllabus_progress_${currentUser.id}`);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            const path = currentUser.accessCFO && !currentUser.accessSoldado ? "cfo" : "soldado";
+            const currentSections = parsed.filter((s: any) => s.category === path);
+            const totalTopics = currentSections.reduce((acc: number, curr: any) => acc + (curr.topics?.length || 0), 0);
+            if (totalTopics > 0) {
+              const completedRead = currentSections.reduce((acc: number, curr: any) => acc + (curr.topics?.filter((t: any) => t.isCompleted).length || 0), 0);
+              setSyllabusProgressPercent(Math.round((completedRead / totalTopics) * 100));
+            } else {
+              setSyllabusProgressPercent(0);
+            }
+          }
+        } catch (e) {
+          console.error("Error parsing syllabus progress:", e);
+        }
+      } else {
+        const path = currentUser.accessCFO && !currentUser.accessSoldado ? "cfo" : "soldado";
+        const currentSections = initialSyllabusData.filter((s: any) => s.category === path);
+        const totalTopics = currentSections.reduce((acc: number, curr: any) => acc + (curr.topics?.length || 0), 0);
+        setSyllabusProgressPercent(0);
+      }
+    };
+
+    updateProgress();
+
+    window.addEventListener("syllabus_updated", updateProgress);
+    window.addEventListener("storage", updateProgress);
+    return () => {
+      window.removeEventListener("syllabus_updated", updateProgress);
+      window.removeEventListener("storage", updateProgress);
+    };
+  }, [currentUser, activeTab]);
+
+  // Toast Notification System
+  const [toasts, setToasts] = useState<{ id: string; type: "success" | "info" | "warning" | "alert"; title: string; message: string }[]>([]);
+
+  const addToast = (title: string, message: string, type: "success" | "info" | "warning" | "alert" = "info") => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { id, title, message, type }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 8000);
+  };
+
+  // Background polling for Toast Notifications (new reports, library materials, simulados)
+  useEffect(() => {
+    if (!currentUser) return;
+
+    let isMounted = true;
+    
+    // Helper keys for localStorage
+    const reportSeenKey = `notified_reports_${currentUser.id}`;
+    const contentSeenKey = `notified_contents_${currentUser.id}`;
+
+    const checkUpdates = async (isInitialSetup: boolean = false) => {
+      try {
+        // 1. Check for new reports safely based on user role
+        const fsReports = currentUser.isAdmin 
+          ? await fetchAllReportsFromFirestore()
+          : await fetchStudentReportsFromFirestore(currentUser.id);
+        if (!isMounted) return;
+
+        // Filter reports belonging to current student
+        const studentReports = currentUser.isAdmin 
+          ? fsReports 
+          : fsReports.filter(r => r.studentId === currentUser.id);
+        
+        // Get already seen reports from localStorage
+        const seenReportIdsStr = localStorage.getItem(reportSeenKey);
+        let seenReportIds: string[] = [];
+        if (seenReportIdsStr) {
+          try {
+            seenReportIds = JSON.parse(seenReportIdsStr);
+          } catch (e) {
+            seenReportIds = [];
+          }
+        }
+
+        if (isInitialSetup && !seenReportIdsStr) {
+          // On first load, mark all existing student reports as seen so we don't spam them
+          const initialIds = studentReports.map(r => r.id);
+          localStorage.setItem(reportSeenKey, JSON.stringify(initialIds));
+        } else {
+          // Look for any reports that are not in seen list
+          const newReports = studentReports.filter(r => !seenReportIds.includes(r.id));
+          if (newReports.length > 0) {
+            newReports.forEach(report => {
+              addToast(
+                "Novo Relatório Disponível! 📬",
+                `O Coordenador enviou um parecer tático para a Semana ${report.weekNumber}. Acesse a Caixa de Correio para ler.`,
+                "success"
+              );
+              seenReportIds.push(report.id);
+            });
+            localStorage.setItem(reportSeenKey, JSON.stringify(seenReportIds));
+            // Update myReports state so the inbox refreshes automatically!
+            setMyReports(studentReports);
+          }
+        }
+
+        // 2. Check for new library contents
+        const fsContents = await fetchSharedContentFromFirestore();
+        if (!isMounted) return;
+
+        const seenContentIdsStr = localStorage.getItem(contentSeenKey);
+        let seenContentIds: string[] = [];
+        if (seenContentIdsStr) {
+          try {
+            seenContentIds = JSON.parse(seenContentIdsStr);
+          } catch (e) {
+            seenContentIds = [];
+          }
+        }
+
+        if (isInitialSetup && !seenContentIdsStr) {
+          // On first load, mark all existing materials as seen
+          const initialIds = fsContents.map(c => c.id);
+          localStorage.setItem(contentSeenKey, JSON.stringify(initialIds));
+        } else {
+          // Look for any contents not in seen list
+          const newContents = fsContents.filter(c => !seenContentIds.includes(c.id));
+          if (newContents.length > 0) {
+            newContents.forEach(item => {
+              const isSimulado = item.type === "simulado";
+              if (isSimulado) {
+                addToast(
+                  "Novo Simulado Disponível! 🏆",
+                  `A prova "${item.title}" foi adicionada. Prepare-se e inicie o simulado quando estiver pronto!`,
+                  "warning"
+                );
+              } else {
+                addToast(
+                  "Novo Material na Biblioteca! 📚",
+                  `O material "${item.title}" foi adicionado à biblioteca de estudos.`,
+                  "info"
+                );
+              }
+              seenContentIds.push(item.id);
+            });
+            localStorage.setItem(contentSeenKey, JSON.stringify(seenContentIds));
+          }
+        }
+      } catch (err) {
+        console.error("Erro ao verificar atualizações de segundo plano:", err);
+      }
+    };
+
+    // Run initial setup immediately
+    checkUpdates(true);
+
+    // Set up polling interval (every 12 seconds)
+    const intervalId = setInterval(() => {
+      checkUpdates(false);
+    }, 12000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, [currentUser]);
+
+  // 1. Initialize Users list
+  useEffect(() => {
     const savedUsers = localStorage.getItem("platform_users");
     let loadedUsers: User[] = [];
     if (savedUsers) {
@@ -90,115 +358,205 @@ export default function App() {
       loadedUsers = [...INITIAL_USERS];
     }
 
-    // Force-merge requested admin to guarantee access
-    const adminEmail = "alofemacao@gmail.com";
-    const adminExists = loadedUsers.some(u => u.email.toLowerCase() === adminEmail);
-    if (!adminExists) {
-      loadedUsers = loadedUsers.filter(u => u.id !== "usr_admin");
-      loadedUsers.unshift(INITIAL_USERS[0]);
-    } else {
-      loadedUsers = loadedUsers.map(u => {
-        if (u.email.toLowerCase() === adminEmail) {
-          return {
-            ...u,
-            password: "2004biel",
-            isAdmin: true,
-            isApproved: true
-          };
-        }
-        return u;
-      });
-    }
+    const adminEmails = ["alofemacao@gmail.com", "gabrielj0s239@gmail.com"];
+    adminEmails.forEach((email, idx) => {
+      const exists = loadedUsers.some(u => u.email.toLowerCase() === email.toLowerCase());
+      if (!exists) {
+        const initialAdmin = INITIAL_USERS.find(u => u.email.toLowerCase() === email.toLowerCase()) || INITIAL_USERS[idx];
+        loadedUsers.unshift(initialAdmin);
+      } else {
+        loadedUsers = loadedUsers.map(u => {
+          if (u.email.toLowerCase() === email.toLowerCase()) {
+            return {
+              ...u,
+              isAdmin: true,
+              isApproved: true,
+              password: u.password || "2004biel"
+            };
+          }
+          return u;
+        });
+      }
+    });
 
     setAllUsers(loadedUsers);
     localStorage.setItem("platform_users", JSON.stringify(loadedUsers));
 
-    // Check active session for auto-login
-    const activeSession = localStorage.getItem("active_user_session");
-    if (activeSession) {
+    // Fetch from Firestore and overwrite/merge immediately to prevent lost edits on reset
+    const loadFromFirestore = async () => {
       try {
-        const user = JSON.parse(activeSession);
+        const fsUsers = await fetchUsersFromFirestore();
+        if (fsUsers && fsUsers.length > 0) {
+          let merged = [...fsUsers];
+          adminEmails.forEach((email, idx) => {
+            const hasAdmin = merged.some(u => u.email.toLowerCase() === email.toLowerCase());
+            if (!hasAdmin) {
+              const initialAdmin = INITIAL_USERS.find(u => u.email.toLowerCase() === email.toLowerCase()) || INITIAL_USERS[idx];
+              merged.unshift(initialAdmin);
+            } else {
+              merged = merged.map(u => {
+                if (u.email.toLowerCase() === email.toLowerCase()) {
+                  return {
+                    ...u,
+                    isAdmin: true,
+                    isApproved: true,
+                    password: u.password || "2004biel"
+                  };
+                }
+                return u;
+              });
+            }
+          });
+          setAllUsers(merged);
+          localStorage.setItem("platform_users", JSON.stringify(merged));
+        }
+      } catch (e) {
+        console.error("Error loading users from Firestore on startup:", e);
+      }
+    };
+    loadFromFirestore();
+  }, []);
+
+  // 2. Track Firebase Auth state & sync user profiles
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const email = firebaseUser.email?.toLowerCase().trim() || "";
         
-        // Find fresh copy of active user in our freshly loaded list
-        const freshUser = loadedUsers.find(u => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase());
-        if (freshUser) {
-          if (freshUser.isApproved) {
-            setCurrentUser(freshUser);
+        // Find user from our locally loaded state
+        const savedUsers = localStorage.getItem("platform_users");
+        let loadedUsers: User[] = [];
+        if (savedUsers) {
+          try { loadedUsers = JSON.parse(savedUsers); } catch(e) {}
+        }
+        if (loadedUsers.length === 0) {
+          loadedUsers = [...INITIAL_USERS];
+        }
+
+        let matchedUser = loadedUsers.find(u => u.email.toLowerCase().trim() === email);
+
+        if (!matchedUser) {
+          // Attempt to pull user profile directly from Firestore
+          try {
+            const qUsers = await fetchUsersFromFirestore();
+            matchedUser = qUsers.find(u => u.email.toLowerCase().trim() === email);
+          } catch (e) {
+            console.error("Error finding user in Firestore during auth init:", e);
+          }
+        }
+
+        // Force auto-approve Lara Jamile profile if detected
+        if (email === "larajamile99@gmail.com") {
+          if (matchedUser) {
+            matchedUser.isApproved = true;
+            matchedUser.accessCFO = true;
+            matchedUser.accessSoldado = true;
+            matchedUser.password = "lara123";
           } else {
-            localStorage.removeItem("active_user_session");
+            matchedUser = {
+              id: firebaseUser.uid,
+              name: "Lara Jamile",
+              email: "larajamile99@gmail.com",
+              password: "lara123",
+              isAdmin: false,
+              isApproved: true,
+              accessCFO: true,
+              accessSoldado: true,
+              createdAt: new Date().toISOString()
+            };
+            try {
+              await saveUserToFirestore(matchedUser);
+            } catch (e) {
+              console.error("Error saving Lara profile in Firestore during auth init:", e);
+            }
+          }
+        }
+
+        if (matchedUser) {
+          // Align pre-seeded or hardcoded IDs with actual Firebase Auth UID
+          if (matchedUser.id !== firebaseUser.uid) {
+            const oldId = matchedUser.id;
+            matchedUser.id = firebaseUser.uid;
+            
+            // Update loadedUsers list and persist to localStorage
+            loadedUsers = loadedUsers.map(u => u.id === oldId ? matchedUser : u);
+            setAllUsers(loadedUsers);
+            localStorage.setItem("platform_users", JSON.stringify(loadedUsers));
+
+            // Clean up old Firestore document if permitted
+            try {
+              await deleteUserFromFirestore(oldId);
+            } catch (e) {
+              // Non-blocking permission failure is safe to ignore
+            }
+          }
+
+          // If they are admin, sync all users from Firestore
+          if (matchedUser.isAdmin) {
+            try {
+              const fsUsers = await fetchUsersFromFirestore();
+              if (fsUsers.length > 0) {
+                setAllUsers(fsUsers);
+                localStorage.setItem("platform_users", JSON.stringify(fsUsers));
+                const freshAdmin = fsUsers.find(u => u.email.toLowerCase().trim() === email);
+                if (freshAdmin) {
+                  matchedUser = freshAdmin;
+                }
+              }
+            } catch (err) {
+              console.error("Admin user sync failed:", err);
+            }
+          } else {
+            // Student user: sync single profile from Firestore
+            try {
+              const freshStudent = await fetchUserFromFirestore(matchedUser.id);
+              if (freshStudent) {
+                matchedUser = freshStudent;
+                const updatedLocals = loadedUsers.map(u => u.id === freshStudent.id ? freshStudent : u);
+                setAllUsers(updatedLocals);
+                localStorage.setItem("platform_users", JSON.stringify(updatedLocals));
+              }
+            } catch (err) {
+              console.error("Student profile sync failed:", err);
+            }
+          }
+
+          setCurrentUser(matchedUser);
+          localStorage.setItem("active_user_session", JSON.stringify(matchedUser));
+          registerSessionEntry(matchedUser);
+        } else {
+          // Fallback user if not found in pre-seeded lists or database
+          const fallbackUser: User = {
+            id: firebaseUser.uid,
+            name: firebaseUser.displayName || "Guerreiro",
+            email: email,
+            isAdmin: false,
+            isApproved: false,
+            accessCFO: false,
+            accessSoldado: false,
+            createdAt: new Date().toISOString()
+          };
+          setCurrentUser(fallbackUser);
+          localStorage.setItem("active_user_session", JSON.stringify(fallbackUser));
+        }
+      } else {
+        // Fallback to local session if present (in case Firebase Auth fails or Email/Password provider is disabled)
+        const localSession = localStorage.getItem("active_user_session");
+        if (localSession) {
+          try {
+            const parsed = JSON.parse(localSession) as User;
+            setCurrentUser(parsed);
+          } catch (e) {
             setCurrentUser(null);
           }
         } else {
-          setCurrentUser(user);
+          setCurrentUser(null);
         }
-      } catch (e) {
-        setCurrentUser(null);
       }
-    }
+      setIsAuthInitializing(false);
+    });
 
-    // Async sync with Firestore database
-    const syncWithFirestore = async () => {
-      try {
-        const fsUsers = await fetchUsersFromFirestore();
-        let finalMergedUsers: User[] = [];
-
-        if (fsUsers.length > 0) {
-          // Firestore is the absolute source of truth!
-          finalMergedUsers = [...fsUsers];
-
-          // Make sure our essential admin is present
-          const adminExists = finalMergedUsers.some(u => u.email.toLowerCase() === adminEmail);
-          if (!adminExists) {
-            // Seed admin if missing
-            const adminUser = {
-              ...INITIAL_USERS[0],
-              createdAt: new Date().toISOString()
-            };
-            finalMergedUsers.unshift(adminUser);
-            await saveUserToFirestore(adminUser);
-          } else {
-            // Guarantee admin password and role
-            finalMergedUsers = finalMergedUsers.map(u => {
-              if (u.email.toLowerCase() === adminEmail) {
-                return { ...u, password: "2004biel", isAdmin: true, isApproved: true };
-              }
-              return u;
-            });
-          }
-        } else {
-          // If Firestore is empty, upload all pre-seed users
-          finalMergedUsers = [...loadedUsers];
-          for (const u of finalMergedUsers) {
-            await saveUserToFirestore(u);
-          }
-        }
-
-        setAllUsers(finalMergedUsers);
-        localStorage.setItem("platform_users", JSON.stringify(finalMergedUsers));
-
-        // Keep active session fully in sync
-        if (activeSession) {
-          try {
-            const activeUserObj = JSON.parse(activeSession);
-            const freshestCopy = finalMergedUsers.find(u => u.id === activeUserObj.id || u.email.toLowerCase() === activeUserObj.email.toLowerCase());
-            if (freshestCopy && freshestCopy.isApproved) {
-              setCurrentUser(freshestCopy);
-              localStorage.setItem("active_user_session", JSON.stringify(freshestCopy));
-            } else {
-              // User has been deleted or unapproved in Firestore: log out immediately!
-              localStorage.removeItem("active_user_session");
-              setCurrentUser(null);
-            }
-          } catch (e) {
-            // ignore
-          }
-        }
-      } catch (error) {
-        console.error("Failed to sync with Firestore on mount:", error);
-      }
-    };
-
-    syncWithFirestore();
+    return () => unsubscribe();
   }, []);
 
   // Fetch and sync reports when current student is loaded
@@ -219,9 +577,16 @@ export default function App() {
 
         // Then fetch from Firestore and update
         try {
-          const fsReports = await fetchAllReportsFromFirestore();
-          localStorage.setItem("all_reports", JSON.stringify(fsReports));
-          const studentReports = fsReports.filter((r) => r.studentId === currentUser.id);
+          const fsReports = currentUser.isAdmin 
+            ? await fetchAllReportsFromFirestore()
+            : await fetchStudentReportsFromFirestore(currentUser.id);
+          
+          if (currentUser.isAdmin) {
+            localStorage.setItem("all_reports", JSON.stringify(fsReports));
+          }
+          const studentReports = currentUser.isAdmin 
+            ? fsReports 
+            : fsReports.filter((r) => r.studentId === currentUser.id);
           setMyReports(studentReports);
         } catch (error) {
           console.error("Error fetching reports from Firestore:", error);
@@ -233,8 +598,11 @@ export default function App() {
   }, [currentUser, activeTab]);
 
   const handleLoginSuccess = (user: User, remember: boolean) => {
-    setCurrentUser(user);
-    localStorage.setItem("active_user_session", JSON.stringify(user));
+    // Clear session storage flags for a clean login cycle
+    sessionStorage.removeItem(`session_registered_${user.id}`);
+    sessionStorage.removeItem(`previous_login_display_${user.id}`);
+
+    registerSessionEntry(user);
 
     if (remember) {
       localStorage.setItem("saved_login_email", user.email);
@@ -245,6 +613,9 @@ export default function App() {
     }
 
     // Direct user to appropriate start tab
+    setCurrentUser(user);
+    localStorage.setItem("active_user_session", JSON.stringify(user));
+
     if (user.isAdmin) {
       setActiveTab("admin");
     } else {
@@ -297,6 +668,22 @@ export default function App() {
     }
   };
 
+  if (isAuthInitializing) {
+    return (
+      <div id="auth-initializing-container" className="min-h-screen bg-[#070b14] flex flex-col items-center justify-center p-4 relative overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-10" />
+        <div className="flex flex-col items-center space-y-4 relative z-10 text-center">
+          <div className="p-3 bg-gradient-to-br from-amber-400 to-amber-500 rounded-2xl shadow-lg text-slate-950 animate-pulse">
+            <Award className="w-8 h-8" />
+          </div>
+          <p className="text-amber-400 font-bold uppercase tracking-widest text-xs animate-pulse">
+            Carregando Plataforma, Guerreiro...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return (
       <Login
@@ -344,7 +731,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#070b14] font-sans text-slate-100 flex flex-col">
+    <div className="min-h-screen bg-slate-950 font-sans text-slate-100 flex flex-col">
       
       {/* Top Navigation Bar */}
       <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-50 px-4 py-3 shadow-md">
@@ -354,8 +741,10 @@ export default function App() {
               <Award className="w-5 h-5" />
             </div>
             <div>
-              <span className="text-[10px] text-amber-400 font-extrabold tracking-widest block uppercase">PMBA Curso</span>
-              <span className="text-sm font-black text-white uppercase tracking-wider">Tático de Estudos</span>
+              <span className="text-sm font-oswald font-bold text-white uppercase tracking-wider">
+                alof.emacao<span className="text-amber-400"> mentoria</span>
+              </span>
+              <span className="text-[9px] text-slate-400 font-mono tracking-widest block uppercase">Tático de Estudos</span>
             </div>
           </div>
 
@@ -365,7 +754,7 @@ export default function App() {
               <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
               <div className="text-left text-xs">
                 <span className="font-extrabold text-slate-200 block">{currentUser.name}</span>
-                <span className="text-[9px] text-slate-400 font-mono block">
+                <span className="text-[9px] text-slate-400 font-mono block notranslate" translate="no">
                   {currentUser.isAdmin 
                     ? "COORDENADOR ADMIN" 
                     : `${currentUser.accessCFO ? "CFO" : ""} ${currentUser.accessSoldado ? "• Soldado" : ""}`.trim()}
@@ -396,136 +785,225 @@ export default function App() {
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Navigation Sidebar (Desktop) */}
-        <nav className="hidden md:block lg:col-span-3 space-y-2">
-          
-          <div className="bg-slate-950 px-4 py-3.5 rounded-2xl border border-slate-850 mb-4">
-            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block mb-1">Status de Serviço</span>
-            <div className="flex items-center gap-2">
-              <Shield className="w-4 h-4 text-amber-400 shrink-0" />
-              <span className="text-xs text-slate-300 font-semibold truncate">
-                {currentUser.isAdmin ? "Acesso Total (Coordenador)" : "Acesso Estudantil Homologado"}
-              </span>
-            </div>
-          </div>
+        {!sidebarMinimized ? (
+          <nav className="hidden md:block lg:col-span-3 space-y-2">
+            
+            <div className="bg-slate-950 px-4 py-4 rounded-2xl border border-slate-850 mb-4 space-y-3.5 shadow-md">
+              <div>
+                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block mb-1">Status de Serviço</span>
+                <div className="flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span className="text-xs text-slate-300 font-semibold truncate">
+                    {currentUser.isAdmin ? "Acesso Total (Coordenador)" : "Acesso Estudantil Homologado"}
+                  </span>
+                </div>
+              </div>
 
-          <div className="space-y-1">
-            {!currentUser.isAdmin && (
-              <>
-                <button
-                  onClick={() => setActiveTab("cycle")}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === "cycle" 
-                      ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
-                      : "text-slate-400 hover:bg-slate-950 hover:text-white"
-                  }`}
-                >
-                  <Calendar className="w-4 h-4 shrink-0" />
-                  <span>Meu Ciclo Semanal</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab("pomodoro")}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === "pomodoro" 
-                      ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
-                      : "text-slate-400 hover:bg-slate-950 hover:text-white"
-                  }`}
-                >
-                  <Clock className="w-4 h-4 shrink-0" />
-                  <span>Pomodoro Tático</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab("stats")}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === "stats" 
-                      ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
-                      : "text-slate-400 hover:bg-slate-950 hover:text-white"
-                  }`}
-                >
-                  <BarChart3 className="w-4 h-4 shrink-0" />
-                  <span>Estatísticas & Erros</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab("syllabus")}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === "syllabus" 
-                      ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
-                      : "text-slate-400 hover:bg-slate-950 hover:text-white"
-                  }`}
-                >
-                  <BookOpen className="w-4 h-4 shrink-0" />
-                  <span>Edital Verticalizado</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab("inbox")}
-                  className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === "inbox" 
-                      ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
-                      : "text-slate-400 hover:bg-slate-950 hover:text-white"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Mail className="w-4 h-4 shrink-0" />
-                    <span>Correio Coordenador</span>
+              {!currentUser.isAdmin && (
+                <>
+                  <div className="h-px bg-slate-850" />
+                  
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block mb-1">Última Entrada</span>
+                    <div className="flex items-center gap-2">
+                      <History className="w-4 h-4 text-teal-400 shrink-0" />
+                      <span className="text-xs text-slate-300 font-semibold">
+                        {lastLoginDisplay ? formatLastLogin(lastLoginDisplay) : "Primeiro acesso hoje"}
+                      </span>
+                    </div>
                   </div>
-                  {myReports.length > 0 && (
-                    <span className="bg-amber-400 text-slate-950 text-[9px] font-black px-2 py-0.5 rounded-full">
-                      {myReports.length}
-                    </span>
-                  )}
-                </button>
-              </>
-            )}
 
-            {/* Biblioteca Area - Available for both students and admins */}
-            <button
-              onClick={() => setActiveTab("content")}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                activeTab === "content" 
-                  ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
-                  : "text-slate-400 hover:bg-slate-950 hover:text-white"
-              }`}
-            >
-              <FolderOpen className="w-4 h-4 shrink-0" />
-              <span>{currentUser.isAdmin ? "Biblioteca & Materiais" : "Biblioteca Pública"}</span>
-            </button>
+                  <div className="h-px bg-slate-850" />
 
-            {/* Simulados Area - Dedicated tab for mock exams and tests */}
-            <button
-              onClick={() => setActiveTab("simulados")}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                activeTab === "simulados" 
-                  ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
-                  : "text-slate-400 hover:bg-slate-950 hover:text-white"
-              }`}
-            >
-              <ClipboardList className="w-4 h-4 shrink-0 text-amber-400" />
-              <span>{currentUser.isAdmin ? "Gerenciar Simulados" : "Simulados & Provas"}</span>
-            </button>
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Edital Verticalizado</span>
+                      <span className="text-xs text-amber-400 font-extrabold">{syllabusProgressPercent}%</span>
+                    </div>
+                    {/* Sleek dynamic progress bar */}
+                    <div className="w-full h-2 bg-slate-900 border border-slate-800 rounded-full overflow-hidden relative">
+                      <div 
+                        className="h-full bg-gradient-to-r from-amber-500 to-amber-300 rounded-full transition-all duration-1000 ease-out shadow-[0_0_8px_rgba(245,158,11,0.3)]"
+                        style={{ width: `${syllabusProgressPercent}%` }}
+                      />
+                    </div>
+                    <span className="text-[9px] text-slate-500 font-medium mt-1 block">Tópicos lidos / concluídos</span>
+                  </div>
+                </>
+              )}
+            </div>
 
-            {/* Admin Area - Available for admin only or student with admin role */}
-            {currentUser.isAdmin && (
+            <div className="space-y-1">
+              {!currentUser.isAdmin && (
+                <>
+                  <button
+                    onClick={() => setActiveTab("cycle")}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      activeTab === "cycle" 
+                        ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                        : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                    }`}
+                  >
+                    <Calendar className="w-4 h-4 shrink-0" />
+                    <span>Meu Ciclo Semanal</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveTab("pomodoro")}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      activeTab === "pomodoro" 
+                        ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                        : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                    }`}
+                  >
+                    <Clock className="w-4 h-4 shrink-0" />
+                    <span>Pomodoro Tático</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveTab("stats")}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      activeTab === "stats" 
+                        ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                        : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                    }`}
+                  >
+                    <BarChart3 className="w-4 h-4 shrink-0" />
+                    <span>Estatísticas & Erros</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveTab("syllabus")}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      activeTab === "syllabus" 
+                        ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                        : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                    }`}
+                  >
+                    <BookOpen className="w-4 h-4 shrink-0" />
+                    <span>Edital Verticalizado</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveTab("inbox")}
+                    className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      activeTab === "inbox" 
+                        ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                        : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Mail className="w-4 h-4 shrink-0" />
+                      <span>Correio Coordenador</span>
+                    </div>
+                    {myReports.length > 0 && (
+                      <span className="bg-amber-400 text-slate-950 text-[9px] font-black px-2 py-0.5 rounded-full">
+                        {myReports.length}
+                      </span>
+                    )}
+                  </button>
+                </>
+              )}
+
+              {/* Biblioteca Area - Available for both students and admins */}
               <button
-                onClick={() => setActiveTab("admin")}
+                onClick={() => setActiveTab("content")}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                  activeTab === "admin" 
+                  activeTab === "content" 
                     ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
                     : "text-slate-400 hover:bg-slate-950 hover:text-white"
                 }`}
               >
-                <Shield className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>Painel de Controle Admin</span>
+                <FolderOpen className="w-4 h-4 shrink-0" />
+                <span>{currentUser.isAdmin ? "Biblioteca & Materiais" : "Biblioteca Pública"}</span>
               </button>
-            )}
+
+              {/* Simulados Area - Dedicated tab for mock exams and tests */}
+              <button
+                onClick={() => setActiveTab("simulados")}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  activeTab === "simulados" 
+                    ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                    : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                }`}
+              >
+                <ClipboardList className="w-4 h-4 shrink-0 text-amber-400" />
+                <span>{currentUser.isAdmin ? "Gerenciar Simulados" : "Simulados & Provas"}</span>
+              </button>
+
+              {/* Questões do Coordenador - Dedicated area for Coordinator training questions */}
+              <button
+                onClick={() => setActiveTab("questions")}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  activeTab === "questions" 
+                    ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                    : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                }`}
+              >
+                <HelpCircle className="w-4 h-4 shrink-0 text-amber-400" />
+                <span>Questões do Coordenador</span>
+              </button>
+
+              {/* Admin Area - Available for admin only or student with admin role */}
+              {currentUser.isAdmin && (
+                <button
+                  onClick={() => setActiveTab("admin")}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                    activeTab === "admin" 
+                      ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                      : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                  }`}
+                >
+                  <Shield className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Painel de Controle Admin</span>
+                </button>
+              )}
+            </div>
+          </nav>
+        ) : (
+          <div className="hidden md:flex lg:col-span-1 flex-col items-center py-5 bg-slate-950/80 border border-slate-850/80 rounded-2xl h-fit space-y-4 shadow-xl">
+            <button
+              onClick={() => setSidebarMinimized(false)}
+              className="p-3 bg-slate-900 hover:bg-amber-400 border border-amber-400/20 text-amber-400 hover:text-slate-950 rounded-xl transition-all cursor-pointer shadow-md"
+              title="Restaurar Menu Lateral"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+            <div className="h-20 border-l border-slate-800" />
+            <span className="text-[10px] text-slate-400 font-black font-mono tracking-widest uppercase select-none" style={{ writingMode: "vertical-rl" }}>
+              Modo Foco Ativo ⚡
+            </span>
           </div>
-        </nav>
+        )}
 
         {/* Mobile Navigation Dropdown Menu */}
         {mobileMenuOpen && (
           <div className="md:hidden col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 shadow-lg">
+            {!currentUser.isAdmin && (
+              <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-850 space-y-2.5 mb-2 text-left">
+                <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  <span>Último Acesso</span>
+                  <span className="text-slate-300 normal-case font-semibold">
+                    {lastLoginDisplay ? formatLastLogin(lastLoginDisplay) : "Primeiro acesso hoje"}
+                  </span>
+                </div>
+                
+                <div className="h-px bg-slate-850" />
+                
+                <div>
+                  <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">
+                    <span>Progresso do Edital</span>
+                    <span className="text-amber-400 font-extrabold">{syllabusProgressPercent}%</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden relative">
+                    <div 
+                      className="h-full bg-gradient-to-r from-amber-500 to-amber-300 rounded-full transition-all duration-1000 ease-out"
+                      style={{ width: `${syllabusProgressPercent}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
             {!currentUser.isAdmin && (
               <div className="grid grid-cols-2 gap-2">
                 <button
@@ -591,6 +1069,15 @@ export default function App() {
                   <Mail className="w-4 h-4" />
                   Correio ({myReports.length})
                 </button>
+                <button
+                  onClick={() => { setActiveTab("questions"); setMobileMenuOpen(false); }}
+                  className={`p-3 text-center rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 transition relative ${
+                    activeTab === "questions" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
+                  }`}
+                >
+                  <HelpCircle className="w-4 h-4" />
+                  Questões
+                </button>
               </div>
             )}
 
@@ -613,6 +1100,15 @@ export default function App() {
                 >
                   <ClipboardList className="w-4 h-4" />
                   Gerenciar Simulados
+                </button>
+                <button
+                  onClick={() => { setActiveTab("questions"); setMobileMenuOpen(false); }}
+                  className={`w-full p-3 text-center rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition ${
+                    activeTab === "questions" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
+                  }`}
+                >
+                  <HelpCircle className="w-4 h-4" />
+                  Gerenciar Questões
                 </button>
                 <button
                   onClick={() => { setActiveTab("admin"); setMobileMenuOpen(false); }}
@@ -638,7 +1134,7 @@ export default function App() {
         )}
 
         {/* Content Viewer Section */}
-        <main className="col-span-1 lg:col-span-9 space-y-6">
+        <main className={`col-span-1 ${sidebarMinimized ? "lg:col-span-11" : "lg:col-span-9"} space-y-6`}>
           
           {/* Active Tab Router */}
           {activeTab === "cycle" && !currentUser.isAdmin && (
@@ -649,7 +1145,11 @@ export default function App() {
           )}
 
           {activeTab === "pomodoro" && !currentUser.isAdmin && (
-            <Pomodoro currentUser={currentUser} />
+            <Pomodoro 
+              currentUser={currentUser} 
+              sidebarMinimized={sidebarMinimized}
+              setSidebarMinimized={setSidebarMinimized}
+            />
           )}
 
           {activeTab === "stats" && !currentUser.isAdmin && (
@@ -661,11 +1161,25 @@ export default function App() {
           )}
 
           {activeTab === "content" && (
-            <ContentArea currentUser={currentUser} onlySimulados={false} />
+            <ContentArea 
+              currentUser={currentUser} 
+              onlySimulados={false} 
+              sidebarMinimized={sidebarMinimized}
+              setSidebarMinimized={setSidebarMinimized}
+            />
           )}
 
           {activeTab === "simulados" && (
-            <ContentArea currentUser={currentUser} onlySimulados={true} />
+            <ContentArea 
+              currentUser={currentUser} 
+              onlySimulados={true} 
+              sidebarMinimized={sidebarMinimized}
+              setSidebarMinimized={setSidebarMinimized}
+            />
+          )}
+
+          {activeTab === "questions" && (
+            <CoordinatorQuestions currentUser={currentUser} />
           )}
 
           {/* Student Mailbox (Caixa de Correio) */}
@@ -693,7 +1207,7 @@ export default function App() {
                     </div>
 
                     <p className="text-xs text-slate-200 whitespace-pre-line leading-relaxed pl-1.5">
-                      {report.content}
+                      {stripMarkdownAsterisks(report.content)}
                     </p>
                   </div>
                 ))}
@@ -726,6 +1240,65 @@ export default function App() {
       <footer className="bg-slate-950 border-t border-slate-900 py-4 px-6 text-center text-[10px] text-slate-500 font-mono tracking-widest uppercase">
         <span>© 2026 PMBA PLATAFORMA DE ESTUDOS • TODOS OS DIREITOS RESERVADOS</span>
       </footer>
+
+      {/* Dynamic Toast Notifications Area */}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-3 max-w-sm w-full px-4 sm:px-0 pointer-events-auto">
+        <style>{`
+          @keyframes toast-slide-in {
+            0% { transform: translateY(1rem) scale(0.95); opacity: 0; }
+            100% { transform: translateY(0) scale(1); opacity: 1; }
+          }
+          .animate-slide-in {
+            animation: toast-slide-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+          }
+        `}</style>
+        {toasts.map((toast) => {
+          let icon = <Bell className="w-5 h-5 text-amber-400 shrink-0" />;
+          let borderColor = "border-slate-800";
+
+          if (toast.type === "success") {
+            icon = <Mail className="w-5 h-5 text-emerald-400 shrink-0 animate-bounce" />;
+            borderColor = "border-emerald-500/40 bg-emerald-950/20";
+          } else if (toast.type === "info") {
+            icon = <BookOpen className="w-5 h-5 text-blue-400 shrink-0 animate-pulse" />;
+            borderColor = "border-blue-500/40 bg-blue-950/20";
+          } else if (toast.type === "warning") {
+            icon = <ClipboardList className="w-5 h-5 text-amber-400 shrink-0 animate-pulse" />;
+            borderColor = "border-amber-500/40 bg-amber-950/20";
+          }
+
+          return (
+            <div
+              key={toast.id}
+              className={`flex items-start gap-3 p-4 bg-slate-950/95 border ${borderColor} rounded-2xl text-white shadow-2xl relative overflow-hidden group transition-all duration-300 animate-slide-in backdrop-blur-md`}
+            >
+              {/* Highlight bar */}
+              <div className="absolute top-0 left-0 bottom-0 w-1 bg-amber-400" />
+              
+              <div className="p-1.5 bg-slate-900 rounded-xl border border-slate-850">
+                {icon}
+              </div>
+
+              <div className="flex-1 space-y-0.5 min-w-0 pr-2">
+                <h4 className="text-xs font-black text-slate-100">
+                  {toast.title}
+                </h4>
+                <p className="text-[11px] text-slate-400 leading-relaxed font-medium">
+                  {toast.message}
+                </p>
+              </div>
+
+              <button
+                onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+                className="text-slate-500 hover:text-white transition duration-200 text-xs font-bold leading-none shrink-0 cursor-pointer p-1 rounded hover:bg-slate-900"
+                title="Ignorar Alerta"
+              >
+                ✕
+              </button>
+            </div>
+          );
+        })}
+      </div>
 
     </div>
   );

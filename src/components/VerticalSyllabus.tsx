@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { initialSyllabusData } from "../data/syllabusData";
 import { SyllabusSection, SyllabusItem, User } from "../types";
-import { CheckCircle2, Circle, FileText, BarChart2, BookOpen, Layers, ShieldCheck, Award, Clock } from "lucide-react";
+import { CheckCircle2, Circle, FileText, BarChart2, BookOpen, Layers, ShieldCheck, Award, Clock, Target, Sparkles } from "lucide-react";
 import { fetchSyllabusProgressFromFirestore, saveSyllabusProgressToFirestore } from "../lib/firebase";
+import TenenteIAModal from "./TenenteIAModal";
+import { registerStudyDay } from "../lib/streak";
 
 interface VerticalSyllabusProps {
   currentUser: User;
@@ -13,6 +15,11 @@ export default function VerticalSyllabus({ currentUser }: VerticalSyllabusProps)
   const [activeTab, setActiveTab] = useState<"cfo" | "soldado">("soldado");
   const [selectedSubject, setSelectedSubject] = useState<string>("Todos");
   const [searchTerm, setSearchTerm] = useState<string>("");
+
+  // Tenente IA modal states
+  const [aiModalOpen, setAiModalOpen] = useState<boolean>(false);
+  const [aiModalTopic, setAiModalTopic] = useState<string>("");
+  const [aiModalSubject, setAiModalSubject] = useState<string>("");
 
   // Determine available study paths based on user access
   useEffect(() => {
@@ -55,6 +62,7 @@ export default function VerticalSyllabus({ currentUser }: VerticalSyllabusProps)
   const saveSyllabus = async (updated: SyllabusSection[]) => {
     setSyllabus(updated);
     localStorage.setItem(`syllabus_progress_${currentUser.id}`, JSON.stringify(updated));
+    window.dispatchEvent(new Event("syllabus_updated"));
     try {
       await saveSyllabusProgressToFirestore(currentUser.id, updated);
     } catch (e) {
@@ -63,11 +71,15 @@ export default function VerticalSyllabus({ currentUser }: VerticalSyllabusProps)
   };
 
   const handleToggleField = (sectionId: string, topicId: string, field: "isCompleted" | "hasSummary" | "hasQuestions") => {
+    let hasRegisteredStudy = false;
     const updated = syllabus.map((section) => {
       if (section.id === sectionId) {
         const updatedTopics = section.topics.map((topic) => {
           if (topic.id === topicId) {
             const nextValue = !topic[field];
+            if (nextValue) {
+              hasRegisteredStudy = true;
+            }
             return {
               ...topic,
               [field]: nextValue,
@@ -82,6 +94,10 @@ export default function VerticalSyllabus({ currentUser }: VerticalSyllabusProps)
       return section;
     });
     saveSyllabus(updated);
+    if (hasRegisteredStudy) {
+      registerStudyDay(currentUser.id);
+      window.dispatchEvent(new Event("streak_updated"));
+    }
   };
 
   const handleRateChange = (sectionId: string, topicId: string, rate: number) => {
@@ -117,6 +133,27 @@ export default function VerticalSyllabus({ currentUser }: VerticalSyllabusProps)
               revisionStage: isActive ? 1 : undefined,
               nextRevisionDate: isActive ? tomorrowStr : undefined,
               lastRevisionDate: isActive ? new Date().toISOString().split("T")[0] : undefined
+            };
+          }
+          return topic;
+        });
+        return { ...section, topics: updatedTopics };
+      }
+      return section;
+    });
+    saveSyllabus(updated);
+  };
+
+  const handleToggleRevision = (sectionId: string, topicId: string, type: "questoes" | "flashcards") => {
+    const updated = syllabus.map((section) => {
+      if (section.id === sectionId) {
+        const updatedTopics = section.topics.map((topic) => {
+          if (topic.id === topicId) {
+            const isCurrentlySame = topic.isRevision && topic.revisionType === type;
+            return {
+              ...topic,
+              isRevision: !isCurrentlySame,
+              revisionType: !isCurrentlySame ? type : undefined
             };
           }
           return topic;
@@ -196,11 +233,12 @@ export default function VerticalSyllabus({ currentUser }: VerticalSyllabusProps)
                 setActiveTab("cfo");
                 setSelectedSubject("Todos");
               }}
-              className={`px-4 py-2 text-xs font-semibold rounded-lg transition cursor-pointer ${
+              className={`px-4 py-2 text-xs font-semibold rounded-lg transition cursor-pointer notranslate ${
                 activeTab === "cfo"
                   ? "bg-amber-400 text-slate-950 shadow-md"
                   : "text-slate-400 hover:text-white"
               }`}
+              translate="no"
             >
               Oficial (CFO) PMBA
             </button>
@@ -360,6 +398,48 @@ export default function VerticalSyllabus({ currentUser }: VerticalSyllabusProps)
                       <span>{topic.spacedRepetitionActive ? `Fase ${topic.revisionStage || 1}` : "Ativar Rev."}</span>
                     </button>
 
+                    {/* Marcar Revisão por Questões */}
+                    <button
+                      onClick={() => handleToggleRevision(section.id, topic.id, "questoes")}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                        topic.isRevision && topic.revisionType === "questoes"
+                          ? "bg-indigo-500/15 border-indigo-500/50 text-indigo-400 hover:bg-indigo-500/25"
+                          : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"
+                      }`}
+                      title="Marcar este assunto para revisão por questões no ciclo semanal"
+                    >
+                      <Target className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Rev: Questões</span>
+                    </button>
+
+                    {/* Marcar Revisão por Flashcards */}
+                    <button
+                      onClick={() => handleToggleRevision(section.id, topic.id, "flashcards")}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                        topic.isRevision && topic.revisionType === "flashcards"
+                          ? "bg-fuchsia-500/15 border-fuchsia-500/50 text-fuchsia-400 hover:bg-fuchsia-500/25"
+                          : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"
+                      }`}
+                      title="Marcar este assunto para revisão por flashcards no ciclo semanal"
+                    >
+                      <Layers className="w-3.5 h-3.5 text-fuchsia-400" />
+                      <span>Rev: Flashcard</span>
+                    </button>
+
+                    {/* Tenente IA Button */}
+                    <button
+                      onClick={() => {
+                        setAiModalTopic(topic.title);
+                        setAiModalSubject(section.title);
+                        setAiModalOpen(true);
+                      }}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-amber-500/30 bg-amber-500/10 hover:bg-amber-400 text-amber-400 hover:text-slate-950 transition cursor-pointer group"
+                      title="Consultar Tenente IA para explicações, resumos ou questões de treino"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 group-hover:scale-110 transition-transform text-amber-400 group-hover:text-slate-950" />
+                      <span>Tenente IA 🧠</span>
+                    </button>
+
                     {/* Lido Checkbox */}
                     <button
                       onClick={() => handleToggleField(section.id, topic.id, "isCompleted")}
@@ -447,6 +527,15 @@ export default function VerticalSyllabus({ currentUser }: VerticalSyllabusProps)
           </div>
         )}
       </div>
+
+      {/* Tenente IA Modal */}
+      <TenenteIAModal
+        isOpen={aiModalOpen}
+        onClose={() => setAiModalOpen(false)}
+        topicTitle={aiModalTopic}
+        subjectTitle={aiModalSubject}
+        currentUser={currentUser}
+      />
     </div>
   );
 }

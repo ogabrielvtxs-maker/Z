@@ -1,14 +1,68 @@
 import React, { useState, useEffect } from "react";
-import { User, StudyCycle, WeeklyReport } from "../types";
+import { User, StudyCycle, WeeklyReport, PerformanceLog, PasswordResetRequest } from "../types";
 import PerformanceStats from "./PerformanceStats";
 import ContentArea from "./ContentArea";
-import { Users, Calendar, BarChart2, Mail, Check, X, Shield, BookOpen, AlertCircle, Send, Award, Trash, Edit3, UserPlus, Plus, Minus } from "lucide-react";
+import { 
+  Users, 
+  Calendar, 
+  BarChart2, 
+  Mail, 
+  Check, 
+  X, 
+  Shield, 
+  BookOpen, 
+  AlertCircle, 
+  Send, 
+  Award, 
+  Trash, 
+  Edit3, 
+  UserPlus, 
+  Plus, 
+  Minus,
+  FileText,
+  RefreshCw,
+  Bell,
+  Sparkles,
+  Loader2,
+  Key,
+  CheckCircle,
+  ChevronDown
+} from "lucide-react";
 import { 
   saveStudyCycleToFirestore, 
+  deleteStudyCycleFromFirestore,
+  fetchStudyCycleFromFirestore,
   saveReportToFirestore, 
   deleteReportFromFirestore,
-  fetchAllReportsFromFirestore 
+  fetchAllReportsFromFirestore,
+  fetchPrivateStudentNotesFromFirestore,
+  savePrivateStudentNotesToFirestore,
+  googleSignInWithGmail,
+  fetchPasswordResetRequestsFromFirestore,
+  deletePasswordResetRequestFromFirestore,
+  savePasswordResetRequestToFirestore,
+  adminUpdateUserPassword
 } from "../lib/firebase";
+import { sendGmailMessage } from "../lib/gmail";
+import { stripMarkdownAsterisks } from "../lib/textCleanup";
+
+const calculateDefaultEndDate = (planType: string, baseDateStr: string) => {
+  if (!baseDateStr) return "";
+  try {
+    const baseDate = new Date(baseDateStr + "T12:00:00");
+    if (isNaN(baseDate.getTime())) return "";
+    if (planType === "mensal") {
+      baseDate.setMonth(baseDate.getMonth() + 1);
+      return baseDate.toISOString().split("T")[0];
+    } else if (planType === "trimestral") {
+      baseDate.setMonth(baseDate.getMonth() + 3);
+      return baseDate.toISOString().split("T")[0];
+    }
+  } catch (e) {
+    console.error("Error calculating end date:", e);
+  }
+  return "";
+};
 
 interface AdminPanelProps {
   currentUser: User;
@@ -21,8 +75,20 @@ interface AdminPanelProps {
 export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDeleteUser, onAddUser }: AdminPanelProps) {
   const [activeSubTab, setActiveSubTab] = useState<"users" | "cycle" | "stats" | "correio" | "content">("users");
   
+  // Student Private Notes states
+  const [activeNotesStudentId, setActiveNotesStudentId] = useState<string | null>(null);
+  const [currentNotesText, setCurrentNotesText] = useState<string>("");
+  const [loadingNotes, setLoadingNotes] = useState<boolean>(false);
+  const [savingNotes, setSavingNotes] = useState<boolean>(false);
+
+  // Student Inactivity alerts state
+  const [inactivityAlerts, setInactivityAlerts] = useState<{ student: User; daysInactive: number; lastActiveDate: string | null }[]>([]);
+  const [showInactivityDetails, setShowInactivityDetails] = useState<boolean>(false);
+  
   // State for selected student to view/edit cycle or stats
   const [selectedStudentId, setSelectedStudentId] = useState<string>("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
+  const [isCreateCycleOpen, setIsCreateCycleOpen] = useState<boolean>(false);
 
   // User creation states
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -33,11 +99,30 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   const [newUserAccessCFO, setNewUserAccessCFO] = useState(false);
   const [newUserIsAdmin, setNewUserIsAdmin] = useState(false);
   const [newUserIsApproved, setNewUserIsApproved] = useState(true);
+  const [newUserPlan, setNewUserPlan] = useState<"mensal" | "trimestral" | "indefinido">("indefinido");
+  const [newUserPlanEndDate, setNewUserPlanEndDate] = useState<string>("");
+  const [newUserCreatedAt, setNewUserCreatedAt] = useState<string>(new Date().toISOString().split("T")[0]);
+
+  const handleNewUserPlanChange = (val: "mensal" | "trimestral" | "indefinido") => {
+    setNewUserPlan(val);
+    if (val !== "indefinido") {
+      setNewUserPlanEndDate(calculateDefaultEndDate(val, newUserCreatedAt));
+    } else {
+      setNewUserPlanEndDate("");
+    }
+  };
+
+  const handleNewUserCreatedAtChange = (dateVal: string) => {
+    setNewUserCreatedAt(dateVal);
+    if (newUserPlan !== "indefinido") {
+      setNewUserPlanEndDate(calculateDefaultEndDate(newUserPlan, dateVal));
+    }
+  };
 
   const handleCreateUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
-      setNotification({ type: "error", message: "Por favor, preencha nome, e-mail e senha do usuário." });
+      setNotification({ type: "error", message: "Por favor, preencha nome, e-mail e senha do aluno." });
       return;
     }
 
@@ -57,12 +142,14 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       accessCFO: newUserAccessCFO,
       isAdmin: newUserIsAdmin,
       isApproved: newUserIsApproved,
-      createdAt: new Date().toISOString()
+      createdAt: newUserCreatedAt ? new Date(newUserCreatedAt + "T12:00:00").toISOString() : new Date().toISOString(),
+      plan: newUserPlan,
+      planEndDate: newUserPlanEndDate ? new Date(newUserPlanEndDate + "T12:00:00").toISOString() : ""
     };
 
     if (onAddUser) {
       onAddUser(newUser);
-      setNotification({ type: "success", message: `Usuário ${newUser.name} criado com sucesso!` });
+      setNotification({ type: "success", message: `Guerreiro ${newUser.name} criado com sucesso!` });
       // Reset form
       setNewUserName("");
       setNewUserEmail("");
@@ -71,14 +158,18 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       setNewUserAccessCFO(false);
       setNewUserIsAdmin(false);
       setNewUserIsApproved(true);
+      setNewUserPlan("indefinido");
+      setNewUserPlanEndDate("");
+      setNewUserCreatedAt(new Date().toISOString().split("T")[0]);
       setShowCreateForm(false);
     } else {
-      setNotification({ type: "error", message: "Função de criação de usuário não disponível." });
+      setNotification({ type: "error", message: "Função de criação de aluno não disponível." });
     }
   };
 
   // Cycle builder states
   const [targetWeek, setTargetWeek] = useState<number>(1);
+  const [adminSelectedWeek, setAdminSelectedWeek] = useState<number>(1);
   const [cycleDays, setCycleDays] = useState<{
     dayNumber: number;
     questionTarget: number;
@@ -100,6 +191,131 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [reportToDeleteId, setReportToDeleteId] = useState<string | null>(null);
 
+  // Email sending loading state
+  const [emailSendingId, setEmailSendingId] = useState<string | null>(null);
+
+  const handleSendPasswordEmail = async (studentUser: User) => {
+    try {
+      setEmailSendingId(studentUser.id);
+      
+      // Get the cached Gmail access token
+      let token = localStorage.getItem("gmail_oauth_token");
+      if (!token) {
+        // If not found, prompt them to sign in with Google to authorize the sending!
+        const result = await googleSignInWithGmail();
+        if (result?.accessToken) {
+          token = result.accessToken;
+        } else {
+          throw new Error("Você precisa autorizar o acesso à sua conta do Google/Gmail para enviar e-mails de recuperação.");
+        }
+      }
+
+      const subject = "🔑 Suas Credenciais de Acesso - Plataforma PMBA";
+      const bodyHtml = `
+        <div style="font-family: Arial, sans-serif; background-color: #070b14; color: #f1f5f9; padding: 30px; border-radius: 12px; max-width: 600px; margin: 0 auto; border: 1px solid #1e293b;">
+          <div style="text-align: center; border-bottom: 2px solid #fbbf24; padding-bottom: 20px; margin-bottom: 25px;">
+            <h1 style="color: #fbbf24; margin: 0; font-size: 24px; text-transform: uppercase; letter-spacing: 1px; font-weight: bold;">Plataforma de Estudos PMBA</h1>
+            <p style="color: #94a3b8; margin: 5px 0 0 0; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px;">CFO & Soldado - Preparação de Elite</p>
+          </div>
+          
+          <p style="font-size: 14px; line-height: 1.6; color: #f1f5f9;">Olá <strong>${studentUser.name}</strong>,</p>
+          
+          <p style="font-size: 14px; line-height: 1.6; color: #e2e8f0;">A sua conta de acesso à Plataforma de Estudos da PMBA foi homologada e está ativa! Seguem abaixo as suas credenciais de acesso oficiais para você iniciar seus estudos:</p>
+          
+          <div style="background-color: #0f172a; border: 1px solid #334155; padding: 20px; border-radius: 8px; margin: 25px 0;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+              <tr>
+                <td style="padding: 6px 0; color: #94a3b8; font-weight: bold; width: 120px;">E-mail:</td>
+                <td style="padding: 6px 0; color: #f1f5f9; font-family: monospace;">${studentUser.email}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; color: #94a3b8; font-weight: bold;">Senha:</td>
+                <td style="padding: 6px 0; color: #fbbf24; font-family: monospace; font-weight: bold; font-size: 16px;">${studentUser.password || "<i>(Redefina usando a opção 'Esqueceu a senha?' na tela de login)</i>"}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; color: #94a3b8; font-weight: bold;">Status:</td>
+                <td style="padding: 6px 0; color: #10b981; font-weight: bold;">ATIVO & HOMOLOGADO</td>
+              </tr>
+            </table>
+          </div>
+          
+          <div style="text-align: center; margin-top: 35px; border-top: 1px solid #1e293b; padding-top: 20px;">
+            <p style="font-size: 11px; color: #64748b; margin: 0;">Este é um e-mail oficial enviado via integração de API do Gmail da Plataforma de Estudos PMBA.</p>
+          </div>
+        </div>
+      `;
+
+      const success = await sendGmailMessage(token, studentUser.email, subject, bodyHtml);
+      if (success) {
+        setNotification({ type: "success", message: `E-mail de credenciais enviado com sucesso para ${studentUser.email}!` });
+      } else {
+        throw new Error("Erro no envio da API do Gmail. Verifique as permissões de OAuth ou refaça a autorização.");
+      }
+    } catch (error: any) {
+      console.error(error);
+      setNotification({ type: "error", message: "Erro ao enviar e-mail: " + (error.message || error) });
+    } finally {
+      setEmailSendingId(null);
+    }
+  };
+
+  const [resetRequests, setResetRequests] = useState<PasswordResetRequest[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState<boolean>(false);
+  const [editedPasswords, setEditedPasswords] = useState<Record<string, string>>({});
+  const [updatingPasswordUserId, setUpdatingPasswordUserId] = useState<string | null>(null);
+  const [showPlanAlertsDetails, setShowPlanAlertsDetails] = useState<boolean>(true);
+
+  const loadPasswordResetRequests = async () => {
+    setLoadingRequests(true);
+    try {
+      const requests = await fetchPasswordResetRequestsFromFirestore();
+      setResetRequests(requests.filter(r => r.status === "pending"));
+    } catch (error) {
+      console.error("Erro ao carregar solicitações de redefinição de senha:", error);
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
+
+  const handleSavePassword = async (targetUser: User, newPassword: string) => {
+    if (!newPassword || newPassword.trim().length < 6) {
+      setNotification({ type: "error", message: "A senha deve ter pelo menos 6 caracteres." });
+      return;
+    }
+
+    setUpdatingPasswordUserId(targetUser.id);
+    const oldPassword = targetUser.password || "";
+    try {
+      await adminUpdateUserPassword(
+        targetUser.email,
+        oldPassword,
+        newPassword.trim(),
+        currentUser.email,
+        currentUser.password || ""
+      );
+
+      const updatedUser = { ...targetUser, password: newPassword.trim() };
+      onUpdateUser(updatedUser);
+
+      setEditedPasswords(prev => {
+        const copy = { ...prev };
+        delete copy[targetUser.id];
+        return copy;
+      });
+
+      setNotification({ type: "success", message: `Senha do aluno ${targetUser.name} atualizada com sucesso!` });
+    } catch (err: any) {
+      console.error(err);
+      setNotification({ type: "error", message: err.message || "Erro ao redefinir senha do aluno." });
+    } finally {
+      setUpdatingPasswordUserId(null);
+    }
+  };
+
+  useEffect(() => {
+    loadPasswordResetRequests();
+  }, []);
+
   // Auto dismiss notifications
   useEffect(() => {
     if (notification) {
@@ -112,6 +328,56 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
 
   // Approved students list for selectors
   const approvedStudents = allUsers.filter((u) => u && u.isApproved && !u.isAdmin);
+
+  useEffect(() => {
+    // Calculate student inactivity alerts (inactive for 7+ days)
+    const alerts: typeof inactivityAlerts = [];
+    const now = new Date();
+
+    approvedStudents.forEach((student) => {
+      let latestLogDate: Date | null = null;
+      const savedLogs = localStorage.getItem(`performance_logs_${student.id}`);
+      if (savedLogs) {
+        try {
+          const logs = JSON.parse(savedLogs);
+          if (Array.isArray(logs) && logs.length > 0) {
+            logs.forEach((log) => {
+              if (log.date) {
+                const d = new Date(log.date);
+                if (!isNaN(d.getTime())) {
+                  if (!latestLogDate || d > latestLogDate) {
+                    latestLogDate = d;
+                  }
+                }
+              }
+            });
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      let daysInactive = 999; // Never active
+      let lastActiveStr: string | null = null;
+
+      if (latestLogDate) {
+        const diffTime = Math.abs(now.getTime() - latestLogDate.getTime());
+        daysInactive = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        lastActiveStr = latestLogDate.toLocaleDateString("pt-BR");
+      }
+
+      if (daysInactive >= 7) {
+        alerts.push({
+          student,
+          daysInactive,
+          lastActiveDate: lastActiveStr
+        });
+      }
+    });
+
+    alerts.sort((a, b) => b.daysInactive - a.daysInactive);
+    setInactivityAlerts(alerts);
+  }, [allUsers]);
 
   useEffect(() => {
     if (approvedStudents.length > 0 && !selectedStudentId) {
@@ -194,9 +460,10 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
 
   const handleAddDayToCycle = () => {
     const nextDayNum = cycleDays.length + 1;
+    const actualNextDayNum = (targetWeek - 1) * 7 + nextDayNum;
     setCycleDays([
       ...cycleDays,
-      { dayNumber: nextDayNum, questionTarget: 15, subjects: ["Nova Matéria"] }
+      { dayNumber: nextDayNum, questionTarget: 15, subjects: [`Nova Matéria Dia ${actualNextDayNum < 10 ? '0' + actualNextDayNum : actualNextDayNum}`] }
     ]);
   };
 
@@ -204,10 +471,11 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     const newDays = [...cycleDays];
     for (let i = 0; i < count; i++) {
       const nextDayNum = newDays.length + 1;
+      const actualNextDayNum = (targetWeek - 1) * 7 + nextDayNum;
       newDays.push({
         dayNumber: nextDayNum,
         questionTarget: 15,
-        subjects: [`Matéria de Alocação Dia ${nextDayNum}`]
+        subjects: [`Matéria de Alocação Dia ${actualNextDayNum < 10 ? '0' + actualNextDayNum : actualNextDayNum}`]
       });
     }
     setCycleDays(newDays);
@@ -232,6 +500,88 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       { dayNumber: 7, questionTarget: 30, subjects: ["Simulado Geral de Revisão"] }
     ]);
   };
+
+  const handleSetWeeks = (weeks: number) => {
+    const targetLength = weeks * 7;
+    let newDays = [...cycleDays];
+    if (newDays.length < targetLength) {
+      // Grow
+      for (let d = newDays.length + 1; d <= targetLength; d++) {
+        const weekdayTemplateIdx = (d - 1) % 7;
+        const defaultTemplates = [
+          { questionTarget: 15, subjects: ["Língua Portuguesa: Crase", "Direito Constitucional: Artigo 5º"] },
+          { questionTarget: 15, subjects: ["Língua Inglesa: Plurais", "Direito Penal: Consumação e Tentativa"] },
+          { questionTarget: 20, subjects: ["Matemática: Progressão Aritmética", "Informática: Word e Writer"] },
+          { questionTarget: 15, subjects: ["Direitos Humanos: Declaração 1948", "História da Bahia: Canudos"] },
+          { questionTarget: 20, subjects: ["Direito Administrativo: Princípios", "Geografia da Bahia: Climatologia"] },
+          { questionTarget: 15, subjects: ["Direito Penal Militar: Motim", "Matemática: Matrizes"] },
+          { questionTarget: 30, subjects: ["Simulado Geral de Revisão"] }
+        ];
+        const template = defaultTemplates[weekdayTemplateIdx];
+        newDays.push({
+          dayNumber: d,
+          questionTarget: template.questionTarget,
+          subjects: template.subjects.map(s => `${s} - Sem ${Math.floor((d - 1) / 7) + 1}`)
+        });
+      }
+    } else if (newDays.length > targetLength) {
+      // Shrink
+      newDays = newDays.slice(0, targetLength);
+    }
+    setCycleDays(newDays);
+    setAdminSelectedWeek(1);
+  };
+
+  // Load selected student's active study cycle into the editor
+  useEffect(() => {
+    setShowDeleteConfirm(false);
+    if (!selectedStudentId) return;
+
+    const loadStudentCycle = async () => {
+      setAdminSelectedWeek(1);
+      // Fetch from Firestore FIRST to get the most accurate, shared state
+      try {
+        const fsCycle = await fetchStudyCycleFromFirestore(selectedStudentId);
+        if (fsCycle && Array.isArray(fsCycle.days)) {
+          setTargetWeek(fsCycle.weekNumber || 1);
+          setCycleDays(fsCycle.days.map(d => ({
+            dayNumber: d.dayNumber,
+            questionTarget: d.questionTarget,
+            subjects: d.subjects.map(s => s.name)
+          })));
+          localStorage.setItem(`study_cycle_${selectedStudentId}`, JSON.stringify(fsCycle));
+          return;
+        }
+      } catch (err) {
+        console.error("Error loading student cycle from Firestore in AdminPanel:", err);
+      }
+
+      // Fallback check in local storage
+      const saved = localStorage.getItem(`study_cycle_${selectedStudentId}`);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved) as StudyCycle;
+          if (parsed && Array.isArray(parsed.days)) {
+            setTargetWeek(parsed.weekNumber || 1);
+            setCycleDays(parsed.days.map(d => ({
+              dayNumber: d.dayNumber,
+              questionTarget: d.questionTarget,
+              subjects: d.subjects.map(s => s.name)
+            })));
+            return;
+          }
+        } catch (e) {
+          // ignore, fall back
+        }
+      }
+
+      // No cycle exists, reset editor to default template so admin starts with a clean template
+      handleResetCycleToDefault();
+      setTargetWeek(1);
+    };
+
+    loadStudentCycle();
+  }, [selectedStudentId]);
 
   // Save student cycle
   const handleSaveStudentCycle = async () => {
@@ -280,6 +630,121 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       type: "success",
       message: `Sucesso! Ciclo de estudos da Semana ${targetWeek} publicado para o aluno: ${student.name}`
     });
+  };
+
+  const handleDeleteStudentCycle = async () => {
+    if (!selectedStudentId) {
+      setNotification({ type: "error", message: "Por favor, selecione um aluno para excluir o ciclo." });
+      return;
+    }
+
+    const student = allUsers.find((u) => u.id === selectedStudentId);
+    if (!student) return;
+
+    localStorage.removeItem(`study_cycle_${selectedStudentId}`);
+    
+    try {
+      await deleteStudyCycleFromFirestore(selectedStudentId);
+    } catch (e) {
+      console.error("Error deleting cycle from Firestore:", e);
+    }
+
+    // Reset cycle editor state to default template
+    handleResetCycleToDefault();
+    setTargetWeek(1);
+
+    window.dispatchEvent(new Event("storage"));
+
+    setNotification({
+      type: "success",
+      message: `Sucesso! Ciclo de estudos de ${student.name} foi removido com sucesso.`
+    });
+
+    setShowDeleteConfirm(false);
+  };
+
+  // AI Weekly Report Helper
+  const [aiGeneratingReport, setAiGeneratingReport] = useState<boolean>(false);
+
+  const handleAiGenerateReport = async () => {
+    if (!selectedStudentId) {
+      setNotification({ type: "error", message: "Selecione um aluno primeiro para gerar o parecer com I.A." });
+      return;
+    }
+
+    const student = allUsers.find((u) => u.id === selectedStudentId);
+    if (!student) return;
+
+    setAiGeneratingReport(true);
+    setNotification({ type: "info", message: "Analisando histórico de acertos do recruta para gerar parecer..." });
+
+    try {
+      const savedLogs = localStorage.getItem(`performance_logs_${selectedStudentId}`);
+      let logsSummary = "";
+      if (savedLogs) {
+        try {
+          const logs: PerformanceLog[] = JSON.parse(savedLogs);
+          if (Array.isArray(logs) && logs.length > 0) {
+            const stats: { [sub: string]: { attempted: number; correct: number; errors: string[] } } = {};
+            logs.forEach(log => {
+              if (!stats[log.subject]) {
+                stats[log.subject] = { attempted: 0, correct: 0, errors: [] };
+              }
+              stats[log.subject].attempted += log.questionsAttempted || 0;
+              stats[log.subject].correct += log.questionsCorrect || 0;
+              if (log.reasonForError && log.reasonForError.trim()) {
+                stats[log.subject].errors.push(`${log.topic}: ${log.reasonForError}`);
+              }
+            });
+
+            logsSummary += `RESUMO DE DESEMPENHO DE ${student.name}:\n`;
+            Object.keys(stats).forEach(sub => {
+              const item = stats[sub];
+              const rate = item.attempted > 0 ? Math.round((item.correct / item.attempted) * 100) : 0;
+              logsSummary += `- Disciplina: ${sub}\n  Aproveitamento: ${rate}% (${item.correct}/${item.attempted} acertos)\n`;
+              if (item.errors.length > 0) {
+                logsSummary += `  Pontos de Erro Reportados:\n   * ` + item.errors.slice(0, 5).join("\n   * ") + "\n";
+              }
+            });
+          } else {
+            logsSummary = "O aluno não possui nenhum registro de simulados ou questões respondidas cadastrado no sistema ainda.";
+          }
+        } catch (e) {
+          logsSummary = "Erro ao ler histórico de questões.";
+        }
+      } else {
+        logsSummary = "Nenhum histórico de questões respondidas encontrado para este aluno.";
+      }
+
+      const response = await fetch("/api/ai/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "generate_report",
+          studentName: student.name,
+          week: reportWeek,
+          performanceData: logsSummary
+        })
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Erro desconhecido na resposta do servidor.");
+      }
+
+      const data = await response.json();
+      if (data.text) {
+        setReportContent(stripMarkdownAsterisks(data.text));
+        setNotification({ type: "success", message: "Parecer tático da IA do Tenente gerado com sucesso!" });
+      } else {
+        throw new Error("Resposta da IA veio vazia.");
+      }
+    } catch (err: any) {
+      console.error("Erro ao gerar relatório com IA:", err);
+      setNotification({ type: "error", message: `Falha ao gerar relatório: ${err.message}` });
+    } finally {
+      setAiGeneratingReport(false);
+    }
   };
 
   // Send Report / Correio
@@ -357,6 +822,14 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       console.error("Error deleting report from Firestore:", e);
     }
   };
+
+  // Expired / reached plans logic
+  const todayDateStr = new Date().toISOString().split("T")[0];
+  const expiredPlanAlerts = allUsers.filter(u => {
+    if (!u || u.isAdmin || !u.plan || u.plan === "indefinido" || !u.planEndDate) return false;
+    const endDateStr = u.planEndDate.split("T")[0];
+    return todayDateStr >= endDateStr;
+  });
 
   return (
     <div id="admin-panel-component" className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-xl">
@@ -462,6 +935,218 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
             </div>
           </div>
 
+          {/* Alertas de Vencimento de Plano */}
+          {expiredPlanAlerts.length > 0 && (
+            <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-rose-500/20 text-rose-400 rounded-lg animate-pulse">
+                    <Calendar className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-black text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                      Vencimentos de Plano de Estudos ({expiredPlanAlerts.length})
+                    </h4>
+                    <p className="text-[10px] text-slate-400 leading-normal">
+                      Os seguintes alunos atingiram ou ultrapassaram a data de término de seus planos de estudo.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPlanAlertsDetails(!showPlanAlertsDetails)}
+                  className="px-3 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-[10px] text-rose-400 font-bold rounded border border-rose-500/20 cursor-pointer transition select-none"
+                >
+                  {showPlanAlertsDetails ? "Ocultar Detalhes" : "Visualizar Alunos"}
+                </button>
+              </div>
+
+              {showPlanAlertsDetails && (
+                <div className="pt-2 border-t border-rose-500/10 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 animate-fade-in">
+                  {expiredPlanAlerts.map((student) => {
+                    const daysOverdue = Math.floor(
+                      (new Date().getTime() - new Date(student.planEndDate!).getTime()) / (1000 * 60 * 60 * 24)
+                    );
+                    return (
+                      <div key={student.id} className="bg-slate-950 p-3 rounded-lg border border-rose-500/10 flex flex-col justify-between space-y-2">
+                        <div>
+                          <span className="font-extrabold text-slate-200 text-xs block truncate">{student.name}</span>
+                          <span className="text-[9px] text-slate-400 block truncate font-mono">{student.email}</span>
+                          <span className="text-[8px] text-slate-500 block mt-0.5">Plano: {student.plan === "mensal" ? "Mensal" : "Trimestral"}</span>
+                        </div>
+                        <div className="flex items-center justify-between pt-1.5 border-t border-slate-900">
+                          <span className="text-[10px] font-bold text-rose-400">
+                            {daysOverdue <= 0 ? "Vence hoje!" : `Vencido há ${daysOverdue} dias`}
+                          </span>
+                          <span className="text-[9px] text-slate-400 font-mono">
+                            {student.planEndDate ? new Date(student.planEndDate).toLocaleDateString("pt-BR") : ""}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Alertas de Redefinição de Senha */}
+          {resetRequests.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-amber-500/20 text-amber-400 rounded-lg animate-pulse">
+                  <Key className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                    Solicitações de Redefinição de Senha ({resetRequests.length})
+                  </h4>
+                  <p className="text-[10px] text-slate-400 leading-normal">
+                    Os seguintes alunos esqueceram a senha e solicitaram que você realize a alteração de suas credenciais de acesso.
+                  </p>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-amber-500/15 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {resetRequests.map((req) => {
+                  const targetUser = allUsers.find(
+                    (u) => u && u.email && u.email.toLowerCase().trim() === req.email.toLowerCase().trim()
+                  );
+                  const currentEditPass = editedPasswords[req.id] !== undefined 
+                    ? editedPasswords[req.id] 
+                    : (targetUser ? targetUser.password || "" : "");
+
+                  return (
+                    <div key={req.id} className="bg-slate-950 p-3 rounded-lg border border-amber-500/10 flex flex-col justify-between space-y-2">
+                      <div>
+                        <span className="font-extrabold text-slate-200 text-xs block truncate">{req.name}</span>
+                        <span className="text-[9px] text-slate-400 block truncate font-mono">{req.email}</span>
+                        <span className="text-[8px] text-slate-500 block font-mono mt-0.5">Solicitado em: {new Date(req.createdAt).toLocaleString("pt-BR")}</span>
+                      </div>
+
+                      {targetUser ? (
+                        <div className="pt-1.5 border-t border-slate-900 space-y-2">
+                          <div>
+                            <label className="block text-[8px] uppercase font-bold text-slate-400 mb-0.5">Nova Senha</label>
+                            <input
+                              type="text"
+                              value={currentEditPass}
+                              onChange={(e) => setEditedPasswords(prev => ({ ...prev, [req.id]: e.target.value }))}
+                              placeholder="Digite a nova senha"
+                              className="w-full bg-slate-900 border border-slate-800 focus:border-amber-400 rounded px-2 py-1 text-xs text-amber-400 font-mono focus:outline-none transition"
+                            />
+                          </div>
+                          
+                          <button
+                            type="button"
+                            disabled={updatingPasswordUserId === targetUser.id}
+                            onClick={async () => {
+                              await handleSavePassword(targetUser, currentEditPass);
+                              try {
+                                await deletePasswordResetRequestFromFirestore(req.id);
+                                await loadPasswordResetRequests();
+                              } catch (err) {
+                                console.error(err);
+                              }
+                            }}
+                            className="w-full py-1.5 bg-amber-400 hover:bg-amber-500 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 text-[10px] font-black rounded uppercase tracking-wider transition cursor-pointer flex items-center justify-center gap-1"
+                          >
+                            {updatingPasswordUserId === targetUser.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Check className="w-3 h-3" />
+                            )}
+                            Redefinir & Resolver
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="pt-1.5 border-t border-slate-900 flex flex-col gap-1.5">
+                          <p className="text-[9px] text-rose-400 italic">Usuário não encontrado na base de dados.</p>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await deletePasswordResetRequestFromFirestore(req.id);
+                                await loadPasswordResetRequests();
+                              } catch (err) {
+                                console.error(err);
+                              }
+                            }}
+                            className="w-full py-1 bg-slate-900 hover:bg-slate-850 text-[10px] text-slate-400 font-bold rounded cursor-pointer text-center"
+                          >
+                            Descartar Solicitação
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Alertas Automáticos de Alunos Inativos */}
+          {inactivityAlerts.length > 0 && (
+            <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-rose-500/20 text-rose-400 rounded-lg animate-pulse">
+                    <Bell className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-black text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                      Alunos Inativos Detectados ({inactivityAlerts.length})
+                    </h4>
+                    <p className="text-[10px] text-slate-400 leading-normal">
+                      Estes alunos homologados não registram atividades de estudo ou simulados há 7 dias ou mais.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowInactivityDetails(!showInactivityDetails)}
+                  className="px-3 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-[10px] text-rose-400 font-bold rounded border border-rose-500/20 cursor-pointer transition"
+                >
+                  {showInactivityDetails ? "Ocultar Detalhes" : "Visualizar Lista"}
+                </button>
+              </div>
+
+              {showInactivityDetails && (
+                <div className="pt-2 border-t border-rose-500/10 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 animate-fade-in">
+                  {inactivityAlerts.map(({ student, daysInactive, lastActiveDate }) => (
+                    <div key={student.id} className="bg-slate-950 p-3 rounded-lg border border-rose-500/10 flex flex-col justify-between space-y-2">
+                      <div>
+                        <span className="font-extrabold text-slate-200 text-xs block truncate">{student.name}</span>
+                        <span className="text-[9px] text-slate-500 block truncate">{student.email}</span>
+                      </div>
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-900">
+                        <span className="text-[10px] font-bold text-rose-400">
+                          {daysInactive === 999 ? "Sem atividades" : `${daysInactive} dias inativo`}
+                        </span>
+                        <span className="text-[9px] text-slate-400 font-mono">
+                          {lastActiveDate ? `Último: ${lastActiveDate}` : "Nunca ativou"}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedStudentId(student.id);
+                          setActiveSubTab("correio");
+                          // pre-populate report area with a nudge
+                          setReportWeek(1);
+                          setReportContent(`Atenção Aluno ${student.name},\n\nIdentificamos em nosso painel de coordenação que você está sem registrar atividades em seu ciclo de estudos há mais de 7 dias.\n\nA constância é o pilar mais importante da sua aprovação no concurso PMBA. Como podemos te ajudar a retomar o ritmo hoje?\n\nForte abraço,\nSua Coordenação.`);
+                        }}
+                        className="w-full mt-1.5 py-1 bg-amber-400 hover:bg-amber-500 text-slate-950 text-[10px] font-extrabold rounded text-center transition cursor-pointer"
+                      >
+                        Enviar Notificação / Cobrança
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {showCreateForm && (
             <form onSubmit={handleCreateUserSubmit} className="bg-slate-950 p-5 rounded-xl border border-slate-800 space-y-4">
               <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
@@ -506,6 +1191,48 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                   />
                 </div>
               </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1">Plano de Estudos</label>
+                  <select
+                    value={newUserPlan}
+                    onChange={(e) => handleNewUserPlanChange(e.target.value as any)}
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-amber-400 rounded-lg px-3 py-2 text-xs text-slate-200 cursor-pointer focus:outline-none transition"
+                  >
+                    <option value="mensal">Mensal</option>
+                    <option value="trimestral">Trimestral</option>
+                    <option value="indefinido">Indefinido</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1">Data de Entrada do Aluno</label>
+                  <input
+                    type="date"
+                    required
+                    value={newUserCreatedAt}
+                    onChange={(e) => handleNewUserCreatedAtChange(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-amber-400 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none transition"
+                  />
+                </div>
+              </div>
+
+              {newUserPlan !== "indefinido" && (
+                <div className="bg-amber-400/5 border border-amber-400/10 rounded-xl p-4 space-y-2 animate-fade-in">
+                  <label className="block text-[10px] uppercase font-bold text-amber-400/80 mb-1">Data de Término do Plano</label>
+                  <input
+                    type="date"
+                    required
+                    value={newUserPlanEndDate}
+                    onChange={(e) => setNewUserPlanEndDate(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-amber-400 rounded-lg px-3 py-2 text-xs text-amber-400 font-mono focus:outline-none transition"
+                  />
+                  <p className="text-[10px] text-slate-400">
+                    O plano {newUserPlan} expira automaticamente nesta data. O administrador receberá um alerta quando a data for atingida.
+                  </p>
+                </div>
+              )}
 
               <div className="flex flex-wrap items-center justify-between gap-4 pt-2 border-t border-slate-900">
                 <div className="flex flex-wrap items-center gap-6">
@@ -578,6 +1305,9 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
               <thead>
                 <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 font-semibold uppercase tracking-wider">
                   <th className="p-3">Nome / E-mail</th>
+                  <th className="p-3 text-center">Data de Entrada</th>
+                  <th className="p-3 text-center">Plano</th>
+                  <th className="p-3 text-center">Vencimento do Plano</th>
                   <th className="p-3 text-center">Senha de Acesso</th>
                   <th className="p-3 text-center">Acesso Soldado</th>
                   <th className="p-3 text-center">Acesso CFO</th>
@@ -594,16 +1324,79 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                       <span className="text-[10px] text-slate-400 block mt-0.5">{user.email}</span>
                     </td>
 
+                    {/* Data de Entrada */}
+                    <td className="p-3 text-center">
+                      <input
+                        type="date"
+                        value={user.createdAt ? user.createdAt.split("T")[0] : ""}
+                        onChange={(e) => onUpdateUser({ ...user, createdAt: e.target.value ? new Date(e.target.value + "T12:00:00").toISOString() : new Date().toISOString() })}
+                        className="bg-slate-900 border border-slate-800 focus:border-amber-400 text-slate-300 text-[11px] rounded px-1.5 py-0.5 focus:outline-none transition font-mono"
+                      />
+                    </td>
+
+                    {/* Plano Selector */}
+                    <td className="p-3 text-center">
+                      <select
+                        value={user.plan || "indefinido"}
+                        onChange={(e) => {
+                          const newPlan = e.target.value as "mensal" | "trimestral" | "indefinido";
+                          let calculatedEndDate = "";
+                          if (newPlan !== "indefinido") {
+                            const baseDateStr = user.createdAt ? user.createdAt.split("T")[0] : new Date().toISOString().split("T")[0];
+                            calculatedEndDate = calculateDefaultEndDate(newPlan, baseDateStr);
+                          }
+                          onUpdateUser({ 
+                            ...user, 
+                            plan: newPlan, 
+                            planEndDate: calculatedEndDate ? new Date(calculatedEndDate + "T12:00:00").toISOString() : "" 
+                          });
+                        }}
+                        className="bg-slate-900 border border-slate-800 focus:border-amber-400 text-slate-300 text-[11px] rounded px-1.5 py-0.5 focus:outline-none cursor-pointer transition"
+                      >
+                        <option value="mensal">Mensal</option>
+                        <option value="trimestral">Trimestral</option>
+                        <option value="indefinido">Indefinido</option>
+                      </select>
+                    </td>
+
+                    {/* Vencimento do Plano */}
+                    <td className="p-3 text-center">
+                      {user.plan && user.plan !== "indefinido" ? (
+                        <input
+                          type="date"
+                          value={user.planEndDate ? user.planEndDate.split("T")[0] : ""}
+                          onChange={(e) => onUpdateUser({ ...user, planEndDate: e.target.value ? new Date(e.target.value + "T12:00:00").toISOString() : "" })}
+                          className="bg-slate-900 border border-slate-800 focus:border-amber-400 text-slate-300 text-[11px] rounded px-1.5 py-0.5 focus:outline-none transition font-mono"
+                        />
+                      ) : (
+                        <span className="text-slate-500 italic text-[11px]">N/A</span>
+                      )}
+                    </td>
+
                     {/* Password Management */}
                     <td className="p-3 text-center">
-                      <div className="flex items-center justify-center max-w-[120px] mx-auto">
+                      <div className="flex items-center justify-center gap-1.5 max-w-[150px] mx-auto">
                         <input
                           type="text"
-                          value={user.password || ""}
-                          onChange={(e) => onUpdateUser({ ...user, password: e.target.value })}
+                          value={editedPasswords[user.id] !== undefined ? editedPasswords[user.id] : (user.password || "")}
+                          onChange={(e) => setEditedPasswords(prev => ({ ...prev, [user.id]: e.target.value }))}
                           className="w-full bg-slate-900 border border-slate-800 hover:border-amber-400/50 focus:border-amber-400 rounded px-2 py-1 text-center font-mono text-[11px] text-amber-400 placeholder-slate-700 focus:outline-none transition"
                           placeholder="Sem senha"
                         />
+                        {editedPasswords[user.id] !== undefined && editedPasswords[user.id] !== user.password && (
+                          <button
+                            disabled={updatingPasswordUserId === user.id}
+                            onClick={() => handleSavePassword(user, editedPasswords[user.id])}
+                            className="p-1 rounded bg-amber-400 hover:bg-amber-500 text-slate-950 transition cursor-pointer shrink-0"
+                            title="Salvar nova senha"
+                          >
+                            {updatingPasswordUserId === user.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Check className="w-3 h-3" />
+                            )}
+                          </button>
+                        )}
                       </div>
                     </td>
                     
@@ -665,7 +1458,22 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                       <div className="flex items-center justify-center gap-1.5">
                         {!user.isApproved ? (
                           <button
-                            onClick={() => onUpdateUser({ ...user, isApproved: true })}
+                            onClick={async () => {
+                              const updatedUser = { ...user, isApproved: true };
+                              onUpdateUser(updatedUser);
+                              setNotification({ 
+                                type: "success", 
+                                message: `Aluno ${user.name} homologado com sucesso!` 
+                              });
+                              if (localStorage.getItem("gmail_oauth_token")) {
+                                await handleSendPasswordEmail(updatedUser);
+                              } else {
+                                setNotification({
+                                  type: "success",
+                                  message: `Aluno ${user.name} homologado! Clique no ícone de carta ao lado para autorizar o Gmail e enviar o e-mail de acesso.`
+                                });
+                              }
+                            }}
                             className="p-1.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 transition cursor-pointer"
                             title="Aprovar Aluno"
                           >
@@ -681,6 +1489,43 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                           </button>
                         )}
                         
+                        {/* Private Student Notes action */}
+                        {!user.isAdmin && (
+                          <button
+                            onClick={async () => {
+                              setActiveNotesStudentId(user.id);
+                              setCurrentNotesText("");
+                              setLoadingNotes(true);
+                              try {
+                                const notes = await fetchPrivateStudentNotesFromFirestore(user.id);
+                                setCurrentNotesText(notes);
+                              } catch (e) {
+                                console.error(e);
+                              } finally {
+                                setLoadingNotes(false);
+                              }
+                            }}
+                            className="p-1.5 rounded bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-amber-400 transition cursor-pointer"
+                            title="Anotações Privadas do Coordenador"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
+                        {/* Enviar Credenciais via Gmail */}
+                        <button
+                          disabled={emailSendingId === user.id}
+                          onClick={() => handleSendPasswordEmail(user)}
+                          className={`p-1.5 rounded border transition cursor-pointer ${
+                            emailSendingId === user.id
+                              ? "bg-slate-800 border-slate-700 text-slate-500 animate-pulse"
+                              : "bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/30 text-blue-400"
+                          }`}
+                          title="Enviar credenciais de acesso por E-mail (Gmail)"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                        </button>
+
                         {/* Delete User */}
                         {user.id !== currentUser.id && (
                           <button
@@ -704,11 +1549,39 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       {/* --- SUBTAB 2: CREATE STUDY CYCLE --- */}
       {activeSubTab === "cycle" && (
         <div className="space-y-6">
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-            <h3 className="font-bold text-sm text-slate-200 mb-4 uppercase tracking-wider flex items-center gap-1.5">
-              <Calendar className="w-4 h-4 text-amber-400" />
-              Parâmetros de Alocação do Ciclo
-            </h3>
+          {/* Collapsible Trigger Card */}
+          <div 
+            onClick={() => setIsCreateCycleOpen(!isCreateCycleOpen)}
+            className="bg-slate-950 p-5 rounded-2xl border border-slate-800 hover:border-amber-400/40 transition duration-300 flex items-center justify-between cursor-pointer group shadow-lg select-none"
+          >
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-amber-400 group-hover:scale-110 transition-transform" />
+                <h3 className="text-base font-extrabold text-slate-100 uppercase tracking-wider">
+                  Gerador de Ciclo de Estudos
+                </h3>
+              </div>
+              <p className="text-xs text-slate-400">
+                Clique para abrir ou recolher as opções de criação de ciclos de estudos semanais.
+              </p>
+            </div>
+            
+            <button
+              type="button"
+              className="flex items-center justify-center gap-2 bg-amber-400 group-hover:bg-amber-500 text-slate-950 font-black px-5 py-2.5 rounded-xl text-xs uppercase tracking-wider transition shadow-md"
+            >
+              <span>Criar</span>
+              <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isCreateCycleOpen ? "rotate-180" : ""}`} />
+            </button>
+          </div>
+
+          {isCreateCycleOpen && (
+            <div className="space-y-6 animate-fade-in">
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                <h3 className="font-bold text-sm text-slate-200 mb-4 uppercase tracking-wider flex items-center gap-1.5">
+                  <Calendar className="w-4 h-4 text-amber-400" />
+                  Parâmetros de Alocação do Ciclo
+                </h3>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -716,7 +1589,8 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                 <select
                   value={selectedStudentId}
                   onChange={(e) => setSelectedStudentId(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 cursor-pointer"
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 cursor-pointer notranslate"
+                  translate="no"
                 >
                   <option value="">Selecione um aluno...</option>
                   {approvedStudents.map((student) => (
@@ -728,15 +1602,36 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
               </div>
 
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Número da Semana do Ciclo</label>
-                <input
-                  type="number"
-                  min="1"
-                  max="52"
-                  value={targetWeek}
-                  onChange={(e) => setTargetWeek(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono"
-                />
+                {(() => {
+                  const selectedStudent = approvedStudents.find((student) => student.id === selectedStudentId);
+                  const maxWeeks = selectedStudent?.plan === "mensal" ? 4 : selectedStudent?.plan === "trimestral" ? 12 : 24;
+                  return (
+                    <>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs text-slate-400">Duração do Ciclo (Semanas)</label>
+                        {selectedStudent && (
+                          <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/20">
+                            Plano: {selectedStudent.plan === "mensal" ? "Mensal (Max 4 Sem)" : selectedStudent.plan === "trimestral" ? "Trimestral (Max 12 Sem)" : "Premium / Completo"}
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        value={Math.ceil(cycleDays.length / 7)}
+                        onChange={(e) => {
+                          const weeks = parseInt(e.target.value) || 1;
+                          handleSetWeeks(weeks);
+                        }}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono cursor-pointer"
+                      >
+                        {Array.from({ length: maxWeeks }, (_, i) => i + 1).map((w) => (
+                          <option key={w} value={w}>
+                            {w} {w === 1 ? "Semana" : "Semanas"} ({w * 7} Dias)
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -792,13 +1687,43 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
               </div>
             </div>
 
+            {cycleDays.length > 7 && (
+              <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-2">
+                <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 block">Navegar pelas Semanas do Ciclo:</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {Array.from({ length: Math.ceil(cycleDays.length / 7) }, (_, i) => i + 1).map((w) => (
+                    <button
+                      key={w}
+                      type="button"
+                      onClick={() => setAdminSelectedWeek(w)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition uppercase tracking-wider ${
+                        adminSelectedWeek === w
+                          ? "bg-amber-400 text-slate-950 shadow-md animate-pulse"
+                          : "text-slate-400 hover:text-slate-200 hover:bg-slate-950"
+                      }`}
+                    >
+                      Semana {w < 10 ? `0${w}` : w}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {cycleDays.map((day, idx) => (
-                <div key={day.dayNumber} className="bg-slate-950/60 p-4 border border-slate-850 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
-                    <span className="text-xs font-extrabold text-amber-400 uppercase tracking-wider font-mono">
-                      Dia {day.dayNumber}
-                    </span>
+              {cycleDays
+                .filter((day) => {
+                  if (cycleDays.length <= 7) return true;
+                  const dayWeek = Math.floor((day.dayNumber - 1) / 7) + 1;
+                  return dayWeek === adminSelectedWeek;
+                })
+                .map((day, idx) => {
+                  const actualDayNum = day.dayNumber;
+                  return (
+                    <div key={day.dayNumber} className="bg-slate-950/60 p-4 border border-slate-850 rounded-xl space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
+                        <span className="text-xs font-extrabold text-amber-400 uppercase tracking-wider font-mono">
+                          Dia {actualDayNum < 10 ? `0${actualDayNum}` : actualDayNum}
+                        </span>
                     <div className="flex items-center gap-1">
                       <span className="text-[10px] text-slate-400">Meta Questões:</span>
                       <input
@@ -845,18 +1770,50 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                     )}
                   </div>
                 </div>
-              ))}
+              );
+            })}
             </div>
 
-            <button
-              onClick={handleSaveStudentCycle}
-              className="w-full bg-amber-400 hover:bg-amber-500 text-slate-950 font-black py-3 rounded-xl text-xs transition uppercase tracking-wider cursor-pointer shadow-md mt-4"
-            >
-              Publicar Ciclo para o Aluno Selecionado
-            </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+              <button
+                onClick={handleSaveStudentCycle}
+                className="w-full bg-amber-400 hover:bg-amber-500 text-slate-950 font-black py-3 rounded-xl text-xs transition uppercase tracking-wider cursor-pointer shadow-md"
+              >
+                Publicar Ciclo para o Aluno Selecionado
+              </button>
+              
+              {!showDeleteConfirm ? (
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="w-full bg-slate-900 border border-rose-900/40 hover:bg-rose-950/25 text-rose-400 font-bold pt-[10px] pb-3 rounded-xl text-xs transition uppercase tracking-wider cursor-pointer shadow-md"
+                >
+                  Excluir Ciclo Existente do Aluno
+                </button>
+              ) : (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDeleteStudentCycle}
+                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 rounded-xl text-[10px] transition uppercase tracking-wider cursor-pointer shadow-md"
+                  >
+                    Confirmar Exclusão
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDeleteConfirm(false)}
+                    className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 rounded-xl text-[10px] transition uppercase tracking-wider cursor-pointer shadow-md"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
+    </div>
+  )}
 
       {/* --- SUBTAB 3: VIEW STUDENT STATS --- */}
       {activeSubTab === "stats" && (() => {
@@ -1051,12 +2008,32 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-400 mb-1">Parecer de Desempenho / Orientações do Coordenador</label>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-xs text-slate-400">Parecer de Desempenho / Orientações do Coordenador</label>
+                    <button
+                      type="button"
+                      onClick={handleAiGenerateReport}
+                      disabled={aiGeneratingReport}
+                      className="inline-flex items-center gap-1.5 text-[10px] bg-slate-900 border border-amber-450/40 text-amber-400 hover:text-slate-950 hover:bg-amber-400 hover:border-amber-400 px-2 py-1 rounded font-bold transition disabled:opacity-50"
+                    >
+                      {aiGeneratingReport ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
+                          <span>Analisando logs...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-3 h-3 text-amber-400" />
+                          <span>Gerar com I.A. ⚡</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                   <textarea
                     rows={6}
                     value={reportContent}
                     onChange={(e) => setReportContent(e.target.value)}
-                    placeholder="Escreva seu parecer tático aqui... Ex: 'Soldado, observei que seu aproveitamento em Análise Combinatória está em 40%. Sugiro revisar a teoria do Binômio de Newton antes de realizar mais exercícios de fixação nesta semana...'"
+                    placeholder="Escreva seu parecer tático aqui... Ou clique em 'Gerar com I.A. ⚡' para obter uma análise cirúrgica automática baseada no histórico de acertos do recruta!"
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400"
                     required
                   />
@@ -1144,6 +2121,99 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       {activeSubTab === "content" && (
         <div className="space-y-4">
           <ContentArea currentUser={currentUser} />
+        </div>
+      )}
+
+      {/* Student Private Notes Modal */}
+      {activeNotesStudentId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full overflow-hidden text-white shadow-2xl animate-fade-in">
+            {/* Header */}
+            <div className="p-6 border-b border-slate-800 flex items-start justify-between bg-slate-950/30">
+              <div>
+                <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest block mb-1">
+                  Anotações de Segurança e Progresso
+                </span>
+                <h3 className="text-sm font-black text-white uppercase tracking-wider">
+                  Anotações Privadas do Coordenador
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Aluno: <strong className="text-amber-400 font-bold">{allUsers.find(u => u.id === activeNotesStudentId)?.name}</strong>
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveNotesStudentId(null)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800/60 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4">
+              <p className="text-[11px] text-slate-400 leading-normal">
+                Estas anotações são de visibilidade <strong className="text-amber-400 font-bold">exclusiva da coordenação</strong>. O aluno não tem acesso a este conteúdo. Use para registrar observações sobre a constância, dificuldades específicas ou conversas de mentoria.
+              </p>
+
+              {loadingNotes ? (
+                <div className="py-8 text-center flex flex-col items-center justify-center space-y-2">
+                  <RefreshCw className="w-6 h-6 text-amber-500 animate-spin" />
+                  <span className="text-[10px] text-slate-500 font-mono">Buscando anotações no servidor...</span>
+                </div>
+              ) : (
+                <textarea
+                  rows={6}
+                  value={currentNotesText}
+                  onChange={(e) => setCurrentNotesText(e.target.value)}
+                  placeholder="Escreva aqui observações privadas sobre o desempenho e evolução do aluno..."
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-400 rounded-xl px-4 py-3 text-xs text-slate-200 focus:outline-none placeholder:text-slate-700 font-medium leading-relaxed"
+                />
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/40 flex items-center justify-between">
+              <span className="text-[9px] text-slate-500 font-mono">
+                Acesso Restrito à Coordenação
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveNotesStudentId(null)}
+                  className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-300 text-xs font-semibold rounded-xl transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={savingNotes || loadingNotes}
+                  onClick={async () => {
+                    setSavingNotes(true);
+                    try {
+                      await savePrivateStudentNotesToFirestore(activeNotesStudentId, currentNotesText);
+                      setNotification({ type: "success", message: "Anotações privadas do aluno salvas com sucesso!" });
+                      setActiveNotesStudentId(null);
+                    } catch (e) {
+                      console.error(e);
+                      setNotification({ type: "error", message: "Erro ao salvar anotações privadas." });
+                    } finally {
+                      setSavingNotes(false);
+                    }
+                  }}
+                  className="px-5 py-2 bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  {savingNotes ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Salvando...</span>
+                    </>
+                  ) : (
+                    <span>Salvar Anotações</span>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
