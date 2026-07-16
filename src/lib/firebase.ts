@@ -278,7 +278,15 @@ export async function fetchUserFromFirestore(userId: string): Promise<User | nul
 export async function saveUserToFirestore(user: User): Promise<void> {
   const path = `users/${user.id}`;
   try {
-    await setDoc(doc(db, "users", user.id), user);
+    // Sanitize user object to remove any undefined properties which Firestore rejects
+    const cleanUser = { ...user };
+    Object.keys(cleanUser).forEach((key) => {
+      const k = key as keyof User;
+      if (cleanUser[k] === undefined) {
+        delete cleanUser[k];
+      }
+    });
+    await setDoc(doc(db, "users", user.id), cleanUser);
   } catch (error) {
     if (error instanceof Error && error.message.includes("permission")) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -321,7 +329,8 @@ export async function fetchStudyCycleFromFirestore(studentId: string): Promise<S
 export async function saveStudyCycleToFirestore(studentId: string, cycle: StudyCycle): Promise<void> {
   const path = `study_cycles/${studentId}`;
   try {
-    await setDoc(doc(db, "study_cycles", studentId), cycle);
+    const sanitizedCycle = cleanUndefined(cycle);
+    await setDoc(doc(db, "study_cycles", studentId), sanitizedCycle);
   } catch (error) {
     if (error instanceof Error && error.message.includes("permission")) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -450,6 +459,27 @@ export async function deleteContentItemFromFirestore(itemId: string): Promise<vo
   }
 }
 
+// Helper function to recursively remove undefined properties before writing to Firestore
+export function cleanUndefined(obj: any): any {
+  if (obj === null || obj === undefined) {
+    return null;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => cleanUndefined(item));
+  }
+  if (typeof obj === "object") {
+    const cleaned: any = {};
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (val !== undefined) {
+        cleaned[key] = cleanUndefined(val);
+      }
+    }
+    return cleaned;
+  }
+  return obj;
+}
+
 // --- SYLLABUS PROGRESS ---
 
 export async function fetchSyllabusProgressFromFirestore(studentId: string): Promise<SyllabusSection[] | null> {
@@ -472,7 +502,8 @@ export async function fetchSyllabusProgressFromFirestore(studentId: string): Pro
 export async function saveSyllabusProgressToFirestore(studentId: string, sections: SyllabusSection[]): Promise<void> {
   const path = `syllabus_progress/${studentId}`;
   try {
-    await setDoc(doc(db, "syllabus_progress", studentId), { studentId, sections, updatedAt: new Date().toISOString() });
+    const sanitizedSections = cleanUndefined(sections);
+    await setDoc(doc(db, "syllabus_progress", studentId), { studentId, sections: sanitizedSections, updatedAt: new Date().toISOString() });
   } catch (error) {
     if (error instanceof Error && error.message.includes("permission")) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -697,4 +728,130 @@ async function testConnection() {
   }
 }
 testConnection();
+
+export async function migrateStudentData(oldId: string, newId: string, updatedProfile: User): Promise<void> {
+  console.log(`Starting data migration from ${oldId} to ${newId}...`);
+  try {
+    // 1. Save new user profile to Firestore
+    await saveUserToFirestore(updatedProfile);
+    
+    // 2. Migrate Study Cycle
+    const oldCycle = await fetchStudyCycleFromFirestore(oldId);
+    if (oldCycle) {
+      const newCycle = { ...oldCycle, studentId: newId };
+      await saveStudyCycleToFirestore(newId, newCycle);
+      await deleteStudyCycleFromFirestore(oldId);
+      console.log("Migrated Study Cycle from Firestore");
+    }
+
+    // 3. Migrate Syllabus Progress
+    const oldSyllabus = await fetchSyllabusProgressFromFirestore(oldId);
+    if (oldSyllabus) {
+      await saveSyllabusProgressToFirestore(newId, oldSyllabus);
+      await deleteDoc(doc(db, "syllabus_progress", oldId));
+      console.log("Migrated Syllabus Progress from Firestore");
+    }
+
+    // 4. Migrate Performance Logs
+    const oldLogs = await fetchPerformanceLogsFromFirestore(oldId);
+    if (oldLogs && oldLogs.length > 0) {
+      for (const log of oldLogs) {
+        const newLog = { ...log, studentId: newId };
+        await savePerformanceLogToFirestore(newId, newLog);
+        await deletePerformanceLogFromFirestore(oldId, log.id);
+      }
+      console.log(`Migrated ${oldLogs.length} Performance Logs from Firestore`);
+    }
+
+    // 5. Migrate Private Notes
+    const oldNotes = await fetchPrivateStudentNotesFromFirestore(oldId);
+    if (oldNotes) {
+      await savePrivateStudentNotesToFirestore(newId, oldNotes);
+      await deleteDoc(doc(db, "private_student_notes", oldId));
+      console.log("Migrated Private Notes from Firestore");
+    }
+
+    // 6. Migrate Weekly Reports in Firestore
+    try {
+      const q = query(collection(db, "reports"), where("studentId", "==", oldId));
+      const querySnapshot = await getDocs(q);
+      for (const docSnap of querySnapshot.docs) {
+        const report = docSnap.data() as WeeklyReport;
+        const updatedReport = { ...report, studentId: newId };
+        await saveReportToFirestore(updatedReport);
+      }
+      console.log(`Migrated reports from Firestore`);
+    } catch (err) {
+      console.error("Error migrating reports in Firestore:", err);
+    }
+
+    // 7. Delete old user profile
+    await deleteUserFromFirestore(oldId);
+    console.log("Deleted old user profile from Firestore");
+
+  } catch (err) {
+    console.error("Error migrating student data in Firestore:", err);
+  }
+
+  // 8. LocalStorage Renaming
+  try {
+    // Study Cycle
+    const localCycle = localStorage.getItem(`study_cycle_${oldId}`);
+    if (localCycle) {
+      try {
+        const parsed = JSON.parse(localCycle);
+        parsed.studentId = newId;
+        localStorage.setItem(`study_cycle_${newId}`, JSON.stringify(parsed));
+      } catch (e) {
+        localStorage.setItem(`study_cycle_${newId}`, localCycle);
+      }
+      localStorage.removeItem(`study_cycle_${oldId}`);
+    }
+
+    // Syllabus Progress
+    const localSyllabus = localStorage.getItem(`syllabus_progress_${oldId}`);
+    if (localSyllabus) {
+      localStorage.setItem(`syllabus_progress_${newId}`, localSyllabus);
+      localStorage.removeItem(`syllabus_progress_${oldId}`);
+    }
+
+    // Performance Logs
+    const localLogs = localStorage.getItem(`performance_logs_${oldId}`);
+    if (localLogs) {
+      try {
+        const parsed = JSON.parse(localLogs) as PerformanceLog[];
+        const updated = parsed.map(log => ({ ...log, studentId: newId }));
+        localStorage.setItem(`performance_logs_${newId}`, JSON.stringify(updated));
+      } catch (e) {
+        localStorage.setItem(`performance_logs_${newId}`, localLogs);
+      }
+      localStorage.removeItem(`performance_logs_${oldId}`);
+    }
+
+    // Daily Study Goal
+    const localGoal = localStorage.getItem(`daily_study_goal_hours_${oldId}`);
+    if (localGoal) {
+      localStorage.setItem(`daily_study_goal_hours_${newId}`, localGoal);
+      localStorage.removeItem(`daily_study_goal_hours_${oldId}`);
+    }
+
+    // Pomodoro seconds today
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(`pomodoro_study_seconds_${oldId}_`)) {
+        const val = localStorage.getItem(key);
+        if (val) {
+          const datePart = key.replace(`pomodoro_study_seconds_${oldId}_`, "");
+          localStorage.setItem(`pomodoro_study_seconds_${newId}_${datePart}`, val);
+          localStorage.removeItem(key);
+          // decrement i because we removed an item from localStorage
+          i--;
+        }
+      }
+    }
+    console.log("Migrated local storage data");
+  } catch (err) {
+    console.error("Error migrating local storage data:", err);
+  }
+}
 

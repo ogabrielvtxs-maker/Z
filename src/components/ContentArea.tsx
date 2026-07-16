@@ -901,7 +901,7 @@ export default function ContentArea({
             <div className="p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/30">
               <div className="flex-1 min-w-0 pr-4">
                 <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest block mb-1">
-                  Resumo de Elite • Tenente IA
+                  Resumo Pedagógico • Mentor de Estudos IA
                 </span>
                 <h3 className="text-lg font-extrabold text-white leading-snug truncate">
                   {selectedReadingItem.title}

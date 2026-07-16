@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { User, StudyCycle, WeeklyReport, PerformanceLog, PasswordResetRequest } from "../types";
+import { User, StudyCycle, WeeklyReport, PerformanceLog, PasswordResetRequest, SyllabusSection, SyllabusItem } from "../types";
 import PerformanceStats from "./PerformanceStats";
 import ContentArea from "./ContentArea";
 import { 
@@ -41,10 +41,14 @@ import {
   fetchPasswordResetRequestsFromFirestore,
   deletePasswordResetRequestFromFirestore,
   savePasswordResetRequestToFirestore,
-  adminUpdateUserPassword
+  adminUpdateUserPassword,
+  fetchSyllabusProgressFromFirestore,
+  saveSyllabusProgressToFirestore
 } from "../lib/firebase";
 import { sendGmailMessage } from "../lib/gmail";
 import { stripMarkdownAsterisks } from "../lib/textCleanup";
+import { initialSyllabusData } from "../data/syllabusData";
+import { raioXCfoData, RaioXSubject, RaioXTopic } from "../data/raioxData";
 
 const calculateDefaultEndDate = (planType: string, baseDateStr: string) => {
   if (!baseDateStr) return "";
@@ -73,13 +77,38 @@ interface AdminPanelProps {
 }
 
 export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDeleteUser, onAddUser }: AdminPanelProps) {
-  const [activeSubTab, setActiveSubTab] = useState<"users" | "cycle" | "stats" | "correio" | "content">("users");
+  const [activeSubTab, setActiveSubTab] = useState<"users" | "cycle" | "stats" | "correio" | "content" | "syllabus_validation">("users");
   
   // Student Private Notes states
   const [activeNotesStudentId, setActiveNotesStudentId] = useState<string | null>(null);
   const [currentNotesText, setCurrentNotesText] = useState<string>("");
   const [loadingNotes, setLoadingNotes] = useState<boolean>(false);
   const [savingNotes, setSavingNotes] = useState<boolean>(false);
+
+  // Syllabus Validation & Alignment states
+  const [valSyllabusSubTab, setValSyllabusSubTab] = useState<"edital" | "raiox">("edital");
+  const [valRaioXCfo, setValRaioXCfo] = useState<RaioXSubject[]>(() => {
+    const saved = localStorage.getItem("custom_raiox_cfo_data");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        return raioXCfoData;
+      }
+    }
+    return raioXCfoData;
+  });
+  const [raioxEditSubject, setRaioxEditSubject] = useState<string>("Todos");
+  const [raioxEditSearch, setRaioxEditSearch] = useState<string>("");
+
+  const [valSelectedStudentId, setValSelectedStudentId] = useState<string>("template");
+  const [valSyllabus, setValSyllabus] = useState<SyllabusSection[]>([]);
+  const [valLoading, setValLoading] = useState<boolean>(false);
+  const [valSaving, setValSaving] = useState<boolean>(false);
+  const [valSearch, setValSearch] = useState<string>("");
+  const [valSubjectFilter, setValSubjectFilter] = useState<string>("Todos");
+  const [valNewTopicTitleMap, setValNewTopicTitleMap] = useState<{ [sectionId: string]: string }>({});
+  const [valStatusMsg, setValStatusMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Student Inactivity alerts state
   const [inactivityAlerts, setInactivityAlerts] = useState<{ student: User; daysInactive: number; lastActiveDate: string | null }[]>([]);
@@ -174,14 +203,15 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     dayNumber: number;
     questionTarget: number;
     subjects: string[];
+    notes?: string;
   }[]>([
-    { dayNumber: 1, questionTarget: 15, subjects: ["Língua Portuguesa: Crase", "Direito Constitucional: Artigo 5º"] },
-    { dayNumber: 2, questionTarget: 15, subjects: ["Língua Inglesa: Plurais", "Direito Penal: Consumação e Tentativa"] },
-    { dayNumber: 3, questionTarget: 20, subjects: ["Matemática: Progressão Aritmética", "Informática: Word e Writer"] },
-    { dayNumber: 4, questionTarget: 15, subjects: ["Direitos Humanos: Declaração 1948", "História da Bahia: Canudos"] },
-    { dayNumber: 5, questionTarget: 20, subjects: ["Direito Administrativo: Princípios", "Geografia da Bahia: Climatologia"] },
-    { dayNumber: 6, questionTarget: 15, subjects: ["Direito Penal Militar: Motim", "Matemática: Matrizes"] },
-    { dayNumber: 7, questionTarget: 30, subjects: ["Simulado Geral de Revisão"] }
+    { dayNumber: 1, questionTarget: 15, subjects: ["Língua Portuguesa: Crase", "Direito Constitucional: Artigo 5º"], notes: "" },
+    { dayNumber: 2, questionTarget: 15, subjects: ["Língua Inglesa: Plurais", "Direito Penal: Consumação e Tentativa"], notes: "" },
+    { dayNumber: 3, questionTarget: 20, subjects: ["Matemática: Progressão Aritmética", "Informática: Word e Writer"], notes: "" },
+    { dayNumber: 4, questionTarget: 15, subjects: ["Direitos Humanos: Declaração 1948", "História da Bahia: Canudos"], notes: "" },
+    { dayNumber: 5, questionTarget: 20, subjects: ["Direito Administrativo: Princípios", "Geografia da Bahia: Climatologia"], notes: "" },
+    { dayNumber: 6, questionTarget: 15, subjects: ["Direito Penal Militar: Motim", "Matemática: Matrizes"], notes: "" },
+    { dayNumber: 7, questionTarget: 30, subjects: ["Simulado Geral de Revisão"], notes: "" }
   ]);
 
   // Mail / Report states
@@ -326,8 +356,319 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     }
   }, [notification]);
 
+  // Load syllabus for validation when active tab or selected student changes
+  useEffect(() => {
+    if (activeSubTab !== "syllabus_validation") return;
+
+    const loadValidationSyllabus = async () => {
+      setValLoading(true);
+      setValStatusMsg(null);
+      try {
+        if (valSelectedStudentId === "template") {
+          const savedTemplate = localStorage.getItem("syllabus_template_cfo");
+          if (savedTemplate) {
+            setValSyllabus(JSON.parse(savedTemplate));
+          } else {
+            const cleaned = initialSyllabusData.map(section => {
+              if (section.category === "cfo") {
+                const filteredTopics = section.topics.filter(topic => {
+                  const titleLower = topic.title.toLowerCase();
+                  return !(
+                    titleLower.includes("lei de acesso") ||
+                    titleLower.includes("acesso à informação") ||
+                    titleLower.includes("12.527") ||
+                    titleLower.includes("obsoleto")
+                  );
+                });
+                return { ...section, topics: filteredTopics };
+              }
+              return section;
+            });
+            setValSyllabus(cleaned);
+          }
+        } else {
+          const fetched = await fetchSyllabusProgressFromFirestore(valSelectedStudentId);
+          if (fetched && fetched.length > 0) {
+            // Also clean on load to protect the user experience from old cached values
+            const cleaned = fetched.map(section => {
+              if (section.category === "cfo") {
+                const filteredTopics = section.topics.filter(topic => {
+                  const titleLower = topic.title.toLowerCase();
+                  return !(
+                    titleLower.includes("lei de acesso") ||
+                    titleLower.includes("acesso à informação") ||
+                    titleLower.includes("12.527") ||
+                    titleLower.includes("obsoleto")
+                  );
+                });
+                return { ...section, topics: filteredTopics };
+              }
+              return section;
+            });
+            setValSyllabus(cleaned);
+          } else {
+            // Load clean default for the selected student
+            const cleanedDefault = initialSyllabusData.map(section => {
+              if (section.category === "cfo") {
+                const filteredTopics = section.topics.filter(topic => {
+                  const titleLower = topic.title.toLowerCase();
+                  return !(
+                    titleLower.includes("lei de acesso") ||
+                    titleLower.includes("acesso à informação") ||
+                    titleLower.includes("12.527") ||
+                    titleLower.includes("obsoleto")
+                  );
+                });
+                return { ...section, topics: filteredTopics };
+              }
+              return section;
+            });
+            setValSyllabus(cleanedDefault);
+            setValStatusMsg({ type: "error", text: "Nenhum progresso de edital encontrado no Firestore para este aluno. Carregando modelo padrão limpo." });
+          }
+        }
+      } catch (err) {
+        console.error("Error loading syllabus for validation:", err);
+        setValStatusMsg({ type: "error", text: "Erro ao carregar o edital verticalizado." });
+      } finally {
+        setValLoading(false);
+      }
+    };
+
+    loadValidationSyllabus();
+  }, [valSelectedStudentId, activeSubTab]);
+
+  const handleValToggleValidated = (sectionId: string, topicId: string) => {
+    const updated = valSyllabus.map(section => {
+      if (section.id === sectionId) {
+        const updatedTopics = section.topics.map(topic => {
+          if (topic.id === topicId) {
+            const currentFlag = (topic as any).isValidated;
+            return { ...topic, isValidated: !currentFlag };
+          }
+          return topic;
+        });
+        return { ...section, topics: updatedTopics };
+      }
+      return section;
+    });
+    setValSyllabus(updated);
+  };
+
+  const handleValEditTopicTitle = (sectionId: string, topicId: string, newTitle: string) => {
+    if (!newTitle.trim()) return;
+    const updated = valSyllabus.map(section => {
+      if (section.id === sectionId) {
+        const updatedTopics = section.topics.map(topic => {
+          if (topic.id === topicId) {
+            return { ...topic, title: newTitle.trim() };
+          }
+          return topic;
+        });
+        return { ...section, topics: updatedTopics };
+      }
+      return section;
+    });
+    setValSyllabus(updated);
+  };
+
+  const handleValDeleteTopic = (sectionId: string, topicId: string) => {
+    const updated = valSyllabus.map(section => {
+      if (section.id === sectionId) {
+        const updatedTopics = section.topics.filter(topic => topic.id !== topicId);
+        return { ...section, topics: updatedTopics };
+      }
+      return section;
+    });
+    setValSyllabus(updated);
+  };
+
+  const handleValAddTopic = (sectionId: string) => {
+    const title = valNewTopicTitleMap[sectionId] || "";
+    if (!title.trim()) {
+      setValStatusMsg({ type: "error", text: "Por favor, digite o título do novo tópico." });
+      return;
+    }
+
+    const newTopic: SyllabusItem = {
+      id: "cfo_custom_" + Math.random().toString(36).substring(2, 11),
+      title: title.trim(),
+      isCompleted: false,
+      studyCount: 0,
+      hasSummary: false,
+      hasQuestions: false,
+      correctRate: 0,
+      spacedRepetitionActive: false
+    };
+
+    (newTopic as any).isValidated = true;
+
+    const updated = valSyllabus.map(section => {
+      if (section.id === sectionId) {
+        return { ...section, topics: [...section.topics, newTopic] };
+      }
+      return section;
+    });
+
+    setValSyllabus(updated);
+    setValNewTopicTitleMap(prev => ({ ...prev, [sectionId]: "" }));
+    setValStatusMsg({ type: "success", text: "Tópico adicionado localmente! Lembre-se de clicar em Salvar." });
+  };
+
+  const handleValValidateAll = () => {
+    const updated = valSyllabus.map(section => {
+      if (section.category === "cfo") {
+        const updatedTopics = section.topics.map(topic => ({
+          ...topic,
+          isValidated: true
+        }));
+        return { ...section, topics: updatedTopics };
+      }
+      return section;
+    });
+    setValSyllabus(updated);
+    setValStatusMsg({ type: "success", text: "Todos os tópicos marcados como Alinhados e Validados! Lembre-se de clicar em Salvar." });
+  };
+
+  const handleValSave = async () => {
+    setValSaving(true);
+    setValStatusMsg(null);
+    try {
+      if (valSelectedStudentId === "template") {
+        localStorage.setItem("syllabus_template_cfo", JSON.stringify(valSyllabus));
+        setValStatusMsg({ type: "success", text: "Modelo padrão do edital CFO PMBA atualizado com sucesso no navegador!" });
+      } else {
+        await saveSyllabusProgressToFirestore(valSelectedStudentId, valSyllabus);
+        if (valSelectedStudentId === currentUser.id) {
+          localStorage.setItem(`syllabus_progress_${currentUser.id}`, JSON.stringify(valSyllabus));
+          window.dispatchEvent(new Event("syllabus_updated"));
+        }
+        setValStatusMsg({ type: "success", text: "Edital verticalizado do aluno atualizado e sincronizado no Firestore!" });
+      }
+    } catch (err) {
+      console.error("Error saving syllabus validation:", err);
+      setValStatusMsg({ type: "error", text: "Erro ao salvar as alterações do edital." });
+    } finally {
+      setValSaving(false);
+    }
+  };
+
+  // --- CFO Raio-X Editing & Management Handlers ---
+  const handleRaioXTopicChange = (subjectIndex: number, topicIndex: number, field: keyof RaioXTopic, value: any) => {
+    const updated = [...valRaioXCfo];
+    const subj = { ...updated[subjectIndex] };
+    const topics = [...subj.topics];
+    topics[topicIndex] = { ...topics[topicIndex], [field]: value };
+    subj.topics = topics;
+    updated[subjectIndex] = subj;
+    setValRaioXCfo(updated);
+  };
+
+  const handleRaioXTopicDelete = (subjectIndex: number, topicIndex: number) => {
+    const updated = [...valRaioXCfo];
+    const subj = { ...updated[subjectIndex] };
+    subj.topics = subj.topics.filter((_, idx) => idx !== topicIndex);
+    updated[subjectIndex] = subj;
+    setValRaioXCfo(updated);
+    setValStatusMsg({ type: "success", text: "Tópico do Raio-X removido localmente! Clique em Salvar Alterações." });
+  };
+
+  const handleRaioXTopicAdd = (subjectIndex: number) => {
+    const updated = [...valRaioXCfo];
+    const subj = { ...updated[subjectIndex] };
+    subj.topics = [
+      ...subj.topics,
+      {
+        topic: "Novo Assunto do Raio-X",
+        incidence: 1,
+        howItFalls: "Descrição pedagógica de como este assunto é cobrado na prova real."
+      }
+    ];
+    updated[subjectIndex] = subj;
+    setValRaioXCfo(updated);
+    setValStatusMsg({ type: "success", text: "Novo tópico adicionado à disciplina! Digite os dados e clique em Salvar Alterações." });
+  };
+
+  const handleRaioXSave = () => {
+    try {
+      localStorage.setItem("custom_raiox_cfo_data", JSON.stringify(valRaioXCfo));
+      window.dispatchEvent(new Event("custom_raiox_updated"));
+      setValStatusMsg({ type: "success", text: "Raio-X CFO PMBA atualizado e sincronizado com sucesso!" });
+    } catch (e) {
+      console.error(e);
+      setValStatusMsg({ type: "error", text: "Erro ao salvar as alterações do Raio-X." });
+    }
+  };
+
+  const handleRaioXReset = () => {
+    localStorage.removeItem("custom_raiox_cfo_data");
+    setValRaioXCfo(raioXCfoData);
+    window.dispatchEvent(new Event("custom_raiox_updated"));
+    setValStatusMsg({ type: "success", text: "Raio-X CFO PMBA restaurado com sucesso para os dados padrão oficiais!" });
+  };
+
+  const handleValResetToDefault = () => {
+    if (window.confirm("Deseja realmente redefinir o edital para o padrão oficial do CFO PMBA (isso removerá tópicos customizados)?")) {
+      const cleaned = initialSyllabusData.map(section => {
+        if (section.category === "cfo") {
+          const filteredTopics = section.topics.filter(topic => {
+            const titleLower = topic.title.toLowerCase();
+            return !(
+              titleLower.includes("lei de acesso") ||
+              titleLower.includes("acesso à informação") ||
+              titleLower.includes("12.527") ||
+              titleLower.includes("obsoleto")
+            );
+          });
+          return { ...section, topics: filteredTopics };
+        }
+        return section;
+      });
+      setValSyllabus(cleaned);
+      setValStatusMsg({ type: "success", text: "Edital redefinido para o padrão limpo do CFO PMBA!" });
+    }
+  };
+
   // Approved students list for selectors
   const approvedStudents = allUsers.filter((u) => u && u.isApproved && !u.isAdmin);
+
+  // Scan for obsolete topics in the loaded rascunho
+  const obsoleteTopicsList: { sectionId: string; subject: string; topic: SyllabusItem }[] = [];
+  valSyllabus.forEach(section => {
+    if (section.category === "cfo") {
+      section.topics.forEach(topic => {
+        const titleLower = topic.title.toLowerCase();
+        if (
+          titleLower.includes("lei de acesso") ||
+          titleLower.includes("acesso à informação") ||
+          titleLower.includes("12.527") ||
+          titleLower.includes("obsoleto")
+        ) {
+          obsoleteTopicsList.push({ sectionId: section.id, subject: section.subject, topic });
+        }
+      });
+    }
+  });
+
+  const handlePurgeAllObsolete = () => {
+    const updated = valSyllabus.map(section => {
+      if (section.category === "cfo") {
+        const filteredTopics = section.topics.filter(topic => {
+          const titleLower = topic.title.toLowerCase();
+          return !(
+            titleLower.includes("lei de acesso") ||
+            titleLower.includes("acesso à informação") ||
+            titleLower.includes("12.527") ||
+            titleLower.includes("obsoleto")
+          );
+        });
+        return { ...section, topics: filteredTopics };
+      }
+      return section;
+    });
+    setValSyllabus(updated);
+    setValStatusMsg({ type: "success", text: "Todos os tópicos obsoletos e LAI foram removidos do rascunho! Lembre-se de clicar em Salvar." });
+  };
 
   useEffect(() => {
     // Calculate student inactivity alerts (inactive for 7+ days)
@@ -463,7 +804,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     const actualNextDayNum = (targetWeek - 1) * 7 + nextDayNum;
     setCycleDays([
       ...cycleDays,
-      { dayNumber: nextDayNum, questionTarget: 15, subjects: [`Nova Matéria Dia ${actualNextDayNum < 10 ? '0' + actualNextDayNum : actualNextDayNum}`] }
+      { dayNumber: nextDayNum, questionTarget: 15, subjects: [`Nova Matéria Dia ${actualNextDayNum < 10 ? '0' + actualNextDayNum : actualNextDayNum}`], notes: "" }
     ]);
   };
 
@@ -475,7 +816,8 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       newDays.push({
         dayNumber: nextDayNum,
         questionTarget: 15,
-        subjects: [`Matéria de Alocação Dia ${actualNextDayNum < 10 ? '0' + actualNextDayNum : actualNextDayNum}`]
+        subjects: [`Matéria de Alocação Dia ${actualNextDayNum < 10 ? '0' + actualNextDayNum : actualNextDayNum}`],
+        notes: ""
       });
     }
     setCycleDays(newDays);
@@ -491,13 +833,13 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
 
   const handleResetCycleToDefault = () => {
     setCycleDays([
-      { dayNumber: 1, questionTarget: 15, subjects: ["Língua Portuguesa: Crase", "Direito Constitucional: Artigo 5º"] },
-      { dayNumber: 2, questionTarget: 15, subjects: ["Língua Inglesa: Plurais", "Direito Penal: Consumação e Tentativa"] },
-      { dayNumber: 3, questionTarget: 20, subjects: ["Matemática: Progressão Aritmética", "Informática: Word e Writer"] },
-      { dayNumber: 4, questionTarget: 15, subjects: ["Direitos Humanos: Declaração 1948", "História da Bahia: Canudos"] },
-      { dayNumber: 5, questionTarget: 20, subjects: ["Direito Administrativo: Princípios", "Geografia da Bahia: Climatologia"] },
-      { dayNumber: 6, questionTarget: 15, subjects: ["Direito Penal Militar: Motim", "Matemática: Matrizes"] },
-      { dayNumber: 7, questionTarget: 30, subjects: ["Simulado Geral de Revisão"] }
+      { dayNumber: 1, questionTarget: 15, subjects: ["Língua Portuguesa: Crase", "Direito Constitucional: Artigo 5º"], notes: "" },
+      { dayNumber: 2, questionTarget: 15, subjects: ["Língua Inglesa: Plurais", "Direito Penal: Consumação e Tentativa"], notes: "" },
+      { dayNumber: 3, questionTarget: 20, subjects: ["Matemática: Progressão Aritmética", "Informática: Word e Writer"], notes: "" },
+      { dayNumber: 4, questionTarget: 15, subjects: ["Direitos Humanos: Declaração 1948", "História da Bahia: Canudos"], notes: "" },
+      { dayNumber: 5, questionTarget: 20, subjects: ["Direito Administrativo: Princípios", "Geografia da Bahia: Climatologia"], notes: "" },
+      { dayNumber: 6, questionTarget: 15, subjects: ["Direito Penal Militar: Motim", "Matemática: Matrizes"], notes: "" },
+      { dayNumber: 7, questionTarget: 30, subjects: ["Simulado Geral de Revisão"], notes: "" }
     ]);
   };
 
@@ -521,7 +863,8 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
         newDays.push({
           dayNumber: d,
           questionTarget: template.questionTarget,
-          subjects: template.subjects.map(s => `${s} - Sem ${Math.floor((d - 1) / 7) + 1}`)
+          subjects: template.subjects.map(s => `${s} - Sem ${Math.floor((d - 1) / 7) + 1}`),
+          notes: ""
         });
       }
     } else if (newDays.length > targetLength) {
@@ -547,7 +890,8 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
           setCycleDays(fsCycle.days.map(d => ({
             dayNumber: d.dayNumber,
             questionTarget: d.questionTarget,
-            subjects: d.subjects.map(s => s.name)
+            subjects: d.subjects.map(s => s.name),
+            notes: d.notes || ""
           })));
           localStorage.setItem(`study_cycle_${selectedStudentId}`, JSON.stringify(fsCycle));
           return;
@@ -566,7 +910,8 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
             setCycleDays(parsed.days.map(d => ({
               dayNumber: d.dayNumber,
               questionTarget: d.questionTarget,
-              subjects: d.subjects.map(s => s.name)
+              subjects: d.subjects.map(s => s.name),
+              notes: d.notes || ""
             })));
             return;
           }
@@ -605,6 +950,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
         questionTarget: d.questionTarget,
         questionSolved: 0,
         completed: false,
+        notes: d.notes || "",
         subjects: d.subjects
           .filter((sub) => sub.trim() !== "")
           .map((sub, sIdx) => ({
@@ -735,7 +1081,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       const data = await response.json();
       if (data.text) {
         setReportContent(stripMarkdownAsterisks(data.text));
-        setNotification({ type: "success", message: "Parecer tático da IA do Tenente gerado com sucesso!" });
+        setNotification({ type: "success", message: "Relatório pedagógico gerado com sucesso pela Inteligência Artificial!" });
       } else {
         throw new Error("Resposta da IA veio vazia.");
       }
@@ -912,6 +1258,15 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
         >
           <BookOpen className="w-4 h-4" />
           Gerenciar Biblioteca
+        </button>
+        <button
+          onClick={() => setActiveSubTab("syllabus_validation")}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition cursor-pointer ${
+            activeSubTab === "syllabus_validation" ? "bg-amber-400 text-slate-950 font-bold" : "text-slate-400 hover:text-white"
+          }`}
+        >
+          <Shield className="w-4 h-4" />
+          Validador de Edital CFO
         </button>
       </div>
 
@@ -1768,6 +2123,20 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                         + Adicionar Matéria ({day.subjects.length}/4)
                       </button>
                     )}
+
+                    {/* Observação para o Aluno */}
+                    <div className="space-y-1 pt-2 border-t border-slate-850">
+                      <label className="block text-[9px] uppercase font-bold text-slate-400">Observação para o Aluno</label>
+                      <textarea
+                        value={day.notes || ""}
+                        onChange={(e) => {
+                          setCycleDays(cycleDays.map(cd => cd.dayNumber === day.dayNumber ? { ...cd, notes: e.target.value } : cd));
+                        }}
+                        placeholder="Insira observações específicas para este dia do aluno..."
+                        className="w-full bg-slate-900 border border-slate-850 hover:border-amber-400/50 focus:border-amber-400 rounded-lg p-2 text-[11px] text-slate-200 placeholder-slate-650 focus:outline-none transition font-sans"
+                        rows={2}
+                      />
+                    </div>
                   </div>
                 </div>
               );
@@ -2123,6 +2492,529 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
           <ContentArea currentUser={currentUser} />
         </div>
       )}
+
+      {/* --- SUBTAB 6: SYLLABUS VALIDATION & ALIGNMENT --- */}
+      {activeSubTab === "syllabus_validation" && (() => {
+        const getSyllabusMappingForRaioX = (subject: string, topicTitle: string) => {
+          const cfoSections = valSyllabus.filter(s => s.category === "cfo");
+          const section = cfoSections.find(s => s.subject.toLowerCase().trim() === subject.toLowerCase().trim());
+          if (!section) return null;
+          
+          const topic = section.topics.find(t => {
+            const tTitle = t.title.toLowerCase();
+            const rTitle = topicTitle.toLowerCase();
+            return tTitle.includes(rTitle) || rTitle.includes(tTitle);
+          });
+          
+          if (topic) {
+            return { sectionName: section.subject, topicName: topic.title };
+          }
+          return null;
+        };
+
+        return (
+          <div className="space-y-6">
+            {/* Header Card */}
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-64 h-64 bg-amber-400/5 rounded-full blur-3xl" />
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 relative z-10">
+                <div>
+                  <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest block mb-1">
+                    Controle de Qualidade do Edital
+                  </span>
+                  <h3 className="text-lg font-black text-white uppercase tracking-wider">
+                    {valSyllabusSubTab === "edital" 
+                      ? "Validador & Alinhamento de Edital CFO PMBA" 
+                      : "Alinhamento & Edição de Raio-X CFO PMBA"}
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {valSyllabusSubTab === "edital"
+                      ? "Gerencie, edite e valide os tópicos do edital verticalizado para garantir 100% de conformidade com o edital CFO PMBA."
+                      : "Gerencie as frequências de incidência e garanta que cada tema do Raio-X esteja corretamente mapeado ao Edital Verticalizado."}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2.5">
+                  {valSyllabusSubTab === "edital" ? (
+                    <>
+                      <button
+                        onClick={handleValValidateAll}
+                        className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-emerald-500/15 cursor-pointer"
+                      >
+                        <Check className="w-4 h-4" />
+                        Validar Todos os Tópicos
+                      </button>
+                      <button
+                        onClick={handleValResetToDefault}
+                        className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-300 border border-slate-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        Restaurar Padrão Oficial
+                      </button>
+                      <button
+                        onClick={handleValSave}
+                        disabled={valSaving}
+                        className="px-4 py-2 bg-amber-400 hover:bg-amber-500 disabled:bg-amber-400/40 text-slate-950 font-black text-xs rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-amber-400/15 cursor-pointer"
+                      >
+                        {valSaving ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Salvando...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-4 h-4" />
+                            Salvar Alterações
+                          </>
+                        )}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={handleRaioXReset}
+                        className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-300 border border-slate-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        Restaurar Raio-X Padrão
+                      </button>
+                      <button
+                        onClick={handleRaioXSave}
+                        className="px-4 py-2 bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-amber-400/15 cursor-pointer"
+                      >
+                        <CheckCircle className="w-4 h-4" />
+                        Salvar Alterações do Raio-X
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {valStatusMsg && (
+                <div className={`mt-4 p-3.5 rounded-xl border text-xs flex items-center gap-2.5 ${
+                  valStatusMsg.type === "success" 
+                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300" 
+                    : "bg-rose-500/10 border-rose-500/20 text-rose-300"
+                }`}>
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{valStatusMsg.text}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Subtab Navigation */}
+            <div className="flex items-center gap-1.5 border-b border-slate-800 pb-px">
+              <button
+                onClick={() => {
+                  setValSyllabusSubTab("edital");
+                  setValStatusMsg(null);
+                }}
+                className={`px-4 py-2.5 text-xs font-black uppercase tracking-wider transition-all relative cursor-pointer ${
+                  valSyllabusSubTab === "edital"
+                    ? "text-amber-400 border-b-2 border-amber-400"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Edital Verticalizado Completo
+              </button>
+              <button
+                onClick={() => {
+                  setValSyllabusSubTab("raiox");
+                  setValStatusMsg(null);
+                }}
+                className={`px-4 py-2.5 text-xs font-black uppercase tracking-wider transition-all relative cursor-pointer ${
+                  valSyllabusSubTab === "raiox"
+                    ? "text-amber-400 border-b-2 border-amber-400"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Mapeamento & Alinhamento de Raio-X CFO
+              </button>
+            </div>
+
+            {valSyllabusSubTab === "edital" ? (
+              <>
+                {/* Controller selectors */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                  {/* Student Selector */}
+                  <div className="md:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-1.5">
+                    <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider block">
+                      Selecionar Alvo do Alinhamento:
+                    </label>
+                    <select
+                      value={valSelectedStudentId}
+                      onChange={(e) => setValSelectedStudentId(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-200 px-3 py-2.5 rounded-xl focus:outline-none focus:border-amber-400 font-medium"
+                    >
+                      <option value="template">📝 Modelo Geral (Template para Novos Alunos)</option>
+                      {approvedStudents
+                        .filter(u => u.accessCFO)
+                        .map(student => (
+                          <option key={student.id} value={student.id}>
+                            👤 Aluno: {student.name} ({student.email})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  {/* Subject Filter */}
+                  <div className="md:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-1.5">
+                    <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider block">
+                      Filtrar por Matéria:
+                    </label>
+                    <select
+                      value={valSubjectFilter}
+                      onChange={(e) => setValSubjectFilter(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-200 px-3 py-2.5 rounded-xl focus:outline-none"
+                    >
+                      <option value="Todos">Todas as Matérias</option>
+                      {Array.from(new Set(valSyllabus.filter(s => s.category === "cfo").map(s => s.subject))).map(sub => (
+                        <option key={sub} value={sub}>{sub}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Search Box */}
+                  <div className="md:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-1.5">
+                    <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider block">
+                      Buscar Termo nos Assuntos:
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: LGPD, Polícia Militar, Inquérito..."
+                      value={valSearch}
+                      onChange={(e) => setValSearch(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-200 px-3 py-2.5 rounded-xl focus:outline-none focus:border-amber-400 placeholder-slate-600 font-medium"
+                    />
+                  </div>
+                </div>
+
+                {/* Obsolete Scan Alert */}
+                {obsoleteTopicsList.length > 0 && (
+                  <div className="bg-rose-500/10 border-2 border-rose-500/20 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="text-xs font-black text-rose-400 uppercase tracking-wider">Tópicos Fora do Edital Detectados!</h4>
+                        <p className="text-xs text-slate-300 mt-1">
+                          Encontramos {obsoleteTopicsList.length} assunto(s) que não constam no edital oficial CFO PMBA (ex: <strong>Lei de Acesso à Informação</strong>).
+                        </p>
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {obsoleteTopicsList.map((item, idx) => (
+                            <span key={idx} className="text-[9px] bg-slate-950 text-rose-400 px-2 py-0.5 rounded-md font-mono border border-rose-500/10">
+                              {item.subject} &gt; {item.topic.title}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handlePurgeAllObsolete}
+                      className="px-3.5 py-2 bg-rose-500 hover:bg-rose-600 text-slate-950 text-xs font-black rounded-xl transition shrink-0 cursor-pointer shadow-lg shadow-rose-500/20"
+                    >
+                      Purgar Obsoletos
+                    </button>
+                  </div>
+                )}
+
+                {/* Main content grid */}
+                {valLoading ? (
+                  <div className="flex flex-col items-center justify-center py-24 bg-slate-900 border border-slate-800 rounded-3xl gap-3">
+                    <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+                    <p className="text-xs text-slate-400 font-medium">Carregando dados do edital para validação...</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-6">
+                    {valSyllabus
+                      .filter(section => section.category === "cfo")
+                      .filter(section => valSubjectFilter === "Todos" || section.subject === valSubjectFilter)
+                      .map(section => {
+                        const filteredTopics = section.topics.filter(topic => 
+                          !valSearch || topic.title.toLowerCase().includes(valSearch.toLowerCase())
+                        );
+
+                        if (valSearch && filteredTopics.length === 0) return null;
+
+                        return (
+                          <div key={section.id} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden transition hover:border-slate-750">
+                            {/* Section Header */}
+                            <div className="bg-slate-950/40 px-5 py-3.5 border-b border-slate-800/60 flex items-center justify-between">
+                              <span className="text-xs font-black text-amber-400 uppercase tracking-wider font-mono">
+                                🏆 {section.subject}
+                              </span>
+                              <span className="text-[10px] bg-slate-900 text-slate-400 px-2 py-0.5 rounded-md font-mono border border-slate-800/50">
+                                {section.topics.length} tópicos cadastrados
+                              </span>
+                            </div>
+
+                            {/* Section Topics List */}
+                            <div className="p-4 space-y-3.5">
+                              <div className="grid grid-cols-1 gap-3">
+                                {filteredTopics.map(topic => {
+                                  const isTopicValid = (topic as any).isValidated;
+                                  return (
+                                    <div 
+                                      key={topic.id} 
+                                      className={`flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-xl border transition ${
+                                        isTopicValid 
+                                          ? "bg-slate-950/40 border-slate-800/80" 
+                                          : "bg-amber-500/5 border-amber-500/10"
+                                      }`}
+                                    >
+                                      {/* Topic Input edit */}
+                                      <div className="flex-1">
+                                        <input 
+                                          type="text" 
+                                          value={topic.title} 
+                                          onChange={(e) => handleValEditTopicTitle(section.id, topic.id, e.target.value)}
+                                          className="w-full bg-slate-900/60 hover:bg-slate-900 border border-slate-800/80 focus:border-amber-400 rounded-lg px-3 py-2 text-xs font-medium text-slate-200 focus:outline-none transition"
+                                          placeholder="Nome do assunto"
+                                        />
+                                      </div>
+
+                                      {/* Controls */}
+                                      <div className="flex items-center justify-end gap-2 shrink-0">
+                                        {/* Validate state button */}
+                                        <button
+                                          onClick={() => handleValToggleValidated(section.id, topic.id)}
+                                          className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-bold uppercase tracking-wider transition cursor-pointer flex items-center gap-1.5 ${
+                                            isTopicValid 
+                                              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" 
+                                              : "bg-amber-400/10 border-amber-400/20 text-amber-400"
+                                          }`}
+                                          title={isTopicValid ? "Marcado como Alinhado" : "Clique para Validar Alinhamento"}
+                                        >
+                                          <Check className={`w-3.5 h-3.5 ${isTopicValid ? "text-emerald-400" : "text-amber-400"}`} />
+                                          <span>{isTopicValid ? "Alinhado" : "Validar"}</span>
+                                        </button>
+
+                                        {/* Delete topic button */}
+                                        <button
+                                          onClick={() => handleValDeleteTopic(section.id, topic.id)}
+                                          className="p-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg transition cursor-pointer"
+                                          title="Excluir Tópico do Edital"
+                                        >
+                                          <Trash className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+
+                                {filteredTopics.length === 0 && (
+                                  <div className="text-center py-6 text-slate-500 text-xs italic">
+                                    Nenhum assunto correspondente à busca nesta matéria.
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Add Topic block */}
+                              <div className="flex items-center gap-2 mt-4 pt-3.5 border-t border-slate-800/60">
+                                <input
+                                  type="text"
+                                  placeholder={`Adicionar novo assunto em ${section.subject}...`}
+                                  value={valNewTopicTitleMap[section.id] || ""}
+                                  onChange={(e) => setValNewTopicTitleMap(prev => ({ ...prev, [section.id]: e.target.value }))}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      handleValAddTopic(section.id);
+                                    }
+                                  }}
+                                  className="flex-1 bg-slate-950 border border-slate-850 hover:border-slate-805 text-xs text-slate-300 px-3 py-2 rounded-xl placeholder-slate-600 focus:outline-none focus:border-amber-400 transition"
+                                />
+                                <button
+                                  onClick={() => handleValAddTopic(section.id)}
+                                  className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-amber-400 text-xs font-bold rounded-xl border border-slate-700 transition flex items-center gap-1.5 cursor-pointer shrink-0"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                  Inserir
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {/* Controllers for Raio-X tab */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                  {/* Subject Filter */}
+                  <div className="md:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-1.5">
+                    <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider block">
+                      Filtrar por Disciplina do Raio-X:
+                    </label>
+                    <select
+                      value={raioxEditSubject}
+                      onChange={(e) => setRaioxEditSubject(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-200 px-3 py-2.5 rounded-xl focus:outline-none focus:border-amber-400 font-medium"
+                    >
+                      <option value="Todos">Todas as Disciplinas</option>
+                      {valRaioXCfo.map(sub => (
+                        <option key={sub.subject} value={sub.subject}>{sub.subject}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Search box */}
+                  <div className="md:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-1.5">
+                    <label className="text-xs text-slate-400 font-semibold uppercase tracking-wider block">
+                      Buscar Termo nos Tópicos:
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Direito Penal, Excel, Crase..."
+                      value={raioxEditSearch}
+                      onChange={(e) => setRaioxEditSearch(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-200 px-3 py-2.5 rounded-xl focus:outline-none focus:border-amber-400 placeholder-slate-600 font-medium"
+                    />
+                  </div>
+                </div>
+
+                {/* Main Raio-X Subjects Grid */}
+                <div className="grid grid-cols-1 gap-6">
+                  {valRaioXCfo
+                    .filter(subj => raioxEditSubject === "Todos" || subj.subject === raioxEditSubject)
+                    .map((subj, subjIdx) => {
+                      const filteredTopics = subj.topics.filter(t =>
+                        !raioxEditSearch || t.topic.toLowerCase().includes(raioxEditSearch.toLowerCase())
+                      );
+
+                      if (raioxEditSearch && filteredTopics.length === 0) return null;
+
+                      return (
+                        <div key={subj.subject} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden transition hover:border-slate-750">
+                          {/* Subject Header */}
+                          <div className="bg-slate-950/40 px-5 py-4 border-b border-slate-800/60 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                            <div className="flex flex-wrap items-center gap-2.5">
+                              <span className="text-xs font-black text-amber-400 uppercase tracking-wider font-mono">
+                                📊 {subj.subject}
+                              </span>
+                              <input
+                                type="text"
+                                value={subj.questionsPerExam}
+                                onChange={(e) => {
+                                  const updated = [...valRaioXCfo];
+                                  const sIdx = valRaioXCfo.findIndex(s => s.subject === subj.subject);
+                                  if (sIdx !== -1) {
+                                    updated[sIdx] = { ...updated[sIdx], questionsPerExam: e.target.value };
+                                    setValRaioXCfo(updated);
+                                  }
+                                }}
+                                placeholder="ex: 10 questões/prova"
+                                className="bg-slate-950 hover:bg-slate-900 border border-slate-800/80 text-[10px] text-slate-300 px-2.5 py-1 rounded-lg font-medium w-36 focus:outline-none focus:border-amber-400 transition"
+                              />
+                            </div>
+                            
+                            <button
+                              onClick={() => {
+                                const sIdx = valRaioXCfo.findIndex(s => s.subject === subj.subject);
+                                if (sIdx !== -1) {
+                                  handleRaioXTopicAdd(sIdx);
+                                }
+                              }}
+                              className="px-3 py-1.5 bg-amber-400/10 hover:bg-amber-400/20 border border-amber-500/20 text-amber-400 text-[10px] font-black uppercase rounded-xl transition flex items-center gap-1 cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              Adicionar Tópico
+                            </button>
+                          </div>
+
+                          {/* Topics List */}
+                          <div className="p-4 space-y-4">
+                            {filteredTopics.map((t, topicIdx) => {
+                              const mapping = getSyllabusMappingForRaioX(subj.subject, t.topic);
+                              const realSubjIdx = valRaioXCfo.findIndex(s => s.subject === subj.subject);
+                              
+                              return (
+                                <div key={topicIdx} className="p-4 rounded-xl border border-slate-800/60 bg-slate-950/20 hover:border-slate-750 transition space-y-3">
+                                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                                    {/* Topic Title Input */}
+                                    <div className="flex-1 w-full">
+                                      <label className="block text-[10px] text-slate-500 font-bold uppercase mb-1">Título do Tópico (Raio-X)</label>
+                                      <input
+                                        type="text"
+                                        value={t.topic}
+                                        onChange={(e) => handleRaioXTopicChange(realSubjIdx, topicIdx, "topic", e.target.value)}
+                                        className="w-full bg-slate-900 border border-slate-800 focus:border-amber-400 rounded-lg px-3 py-2 text-xs font-semibold text-white focus:outline-none transition"
+                                      />
+                                    </div>
+
+                                    {/* Incidence score input */}
+                                    <div className="w-32 shrink-0">
+                                      <label className="block text-[10px] text-slate-500 font-bold uppercase mb-1">Incidência (Frequência)</label>
+                                      <div className="flex items-center gap-1.5">
+                                        <input
+                                          type="number"
+                                          min="1"
+                                          max="100"
+                                          value={t.incidence}
+                                          onChange={(e) => handleRaioXTopicChange(realSubjIdx, topicIdx, "incidence", parseInt(e.target.value) || 1)}
+                                          className="w-full bg-slate-900 border border-slate-800 focus:border-amber-400 rounded-lg px-3 py-2 text-xs font-mono text-center text-white focus:outline-none transition"
+                                        />
+                                        <span className="text-[10px] text-rose-400 font-bold font-mono">x</span>
+                                      </div>
+                                    </div>
+
+                                    {/* Delete action */}
+                                    <div className="self-end md:self-center shrink-0">
+                                      <button
+                                        onClick={() => handleRaioXTopicDelete(realSubjIdx, topicIdx)}
+                                        className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg transition cursor-pointer"
+                                        title="Excluir Tópico do Raio-X"
+                                      >
+                                        <Trash className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* How it falls textarea description */}
+                                  <div className="w-full">
+                                    <label className="block text-[10px] text-slate-500 font-bold uppercase mb-1">Como cai na prova (Guia Didático do Professor)</label>
+                                    <textarea
+                                      value={t.howItFalls}
+                                      onChange={(e) => handleRaioXTopicChange(realSubjIdx, topicIdx, "howItFalls", e.target.value)}
+                                      rows={2}
+                                      className="w-full bg-slate-900 border border-slate-800 focus:border-amber-400 rounded-lg px-3 py-2 text-xs text-slate-300 focus:outline-none font-medium leading-relaxed transition"
+                                      placeholder="Descreva detalhadamente como a banca aborda esse tema de forma prática e didática..."
+                                    />
+                                  </div>
+
+                                  {/* Dynamic alignment checker */}
+                                  <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-850">
+                                    <span className="text-[10px] text-slate-500 font-bold uppercase">Status de Alinhamento:</span>
+                                    {mapping ? (
+                                      <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-2.5 py-0.5 rounded-lg font-semibold">
+                                        <Check className="w-3 h-3" />
+                                        Mapeado ao Edital: <strong className="font-bold underline">{mapping.sectionName} &gt; {mapping.topicName}</strong>
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 text-[10px] bg-rose-500/10 border border-rose-500/20 text-rose-400 px-2.5 py-0.5 rounded-lg font-semibold">
+                                        <AlertCircle className="w-3 h-3 text-rose-400" />
+                                        Não Encontrado no Edital Verticalizado (Atenção para desalinhamento!)
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+
+                            {filteredTopics.length === 0 && (
+                              <div className="text-center py-6 text-slate-500 text-xs italic">
+                                Nenhum tópico correspondente à busca nesta disciplina.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Student Private Notes Modal */}
       {activeNotesStudentId && (

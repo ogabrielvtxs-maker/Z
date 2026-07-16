@@ -52,6 +52,13 @@ export default function SmartDiagnostic({ studentId, studentName }: SmartDiagnos
   const [diagnostics, setDiagnostics] = useState<DiagnosticItem[]>([]);
   const [reorganizing, setReorganizing] = useState(false);
   const [activeTab, setActiveTab] = useState<"diagnostico" | "relatorio">("diagnostico");
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [customAlert, setCustomAlert] = useState<{
+    show: boolean;
+    title: string;
+    message: string;
+    type: "success" | "error" | "warning";
+  } | null>(null);
 
   // Load all necessary user state
   const loadData = () => {
@@ -297,18 +304,21 @@ export default function SmartDiagnostic({ studentId, studentName }: SmartDiagnos
   // Reorganizar Rotina Automática:
   // Re-balances upcoming incomplete days of study cycle: distributes uncompleted subjects,
   // resets target questions to a realistic level (e.g. 10-15 per day) to avoid overwhelm.
-  const handleReorganizeRoutine = async () => {
+  const triggerReorganize = () => {
     if (!cycle) {
-      alert("Nenhum ciclo ativo encontrado para reorganizar.");
+      setCustomAlert({
+        show: true,
+        title: "Aviso",
+        message: "Nenhum ciclo ativo encontrado para reorganizar.",
+        type: "warning"
+      });
       return;
     }
+    setShowConfirm(true);
+  };
 
-    const confirmReorg = window.confirm(
-      "Atenção Recruta!\n\nDeseja que o algoritmo tático reorganize seu ciclo de estudos automaticamente?\n\nO sistema irá:\n1. Agrupar as matérias pendentes da semana\n2. Redistribuí-las equilibradamente entre os dias restantes\n3. Ajustar a meta diária de questões para um volume saudável (12 questões por dia)\n\nIsso permitirá que você recupere o rendimento sem se sobrecarregar."
-    );
-
-    if (!confirmReorg) return;
-
+  const executeReorganize = async () => {
+    if (!cycle) return;
     setReorganizing(true);
 
     try {
@@ -323,7 +333,12 @@ export default function SmartDiagnostic({ studentId, studentName }: SmartDiagnos
       });
 
       if (allPendingSubjects.length === 0) {
-        alert("Excelente notícia: você não possui nenhuma matéria pendente no ciclo ativo para redistribuir!");
+        setCustomAlert({
+          show: true,
+          title: "Sem Pendências",
+          message: "Excelente notícia: você não possui nenhuma matéria pendente no ciclo ativo para redistribuir!",
+          type: "success"
+        });
         setReorganizing(false);
         return;
       }
@@ -379,10 +394,20 @@ export default function SmartDiagnostic({ studentId, studentName }: SmartDiagnos
       // Trigger dispatch event
       window.dispatchEvent(new Event("storage"));
 
-      alert("Ordem de serviço atualizada! Sua rotina foi reorganizada com sucesso. As metas diárias de questões foram reajustadas para 12 acertos e as matérias pendentes foram redistribuídas de forma equilibrada. Volte aos estudos com força total!");
+      setCustomAlert({
+        show: true,
+        title: "Rotina Reorganizada",
+        message: "Ordem de serviço atualizada! Sua rotina foi reorganizada com sucesso. As metas diárias de questões foram reajustadas para 12 acertos e as matérias pendentes foram redistribuídas de forma equilibrada. Volte aos estudos com força total!",
+        type: "success"
+      });
     } catch (e) {
       console.error("Error reorganizing study cycle:", e);
-      alert("Houve um erro técnico ao re-balancear seu ciclo no servidor. Tente novamente mais tarde.");
+      setCustomAlert({
+        show: true,
+        title: "Erro de Reorganização",
+        message: "Houve um erro técnico ao re-balancear seu ciclo no servidor. Tente novamente mais tarde.",
+        type: "error"
+      });
     } finally {
       setReorganizing(false);
     }
@@ -481,7 +506,7 @@ export default function SmartDiagnostic({ studentId, studentName }: SmartDiagnos
                 </p>
               </div>
               <button
-                onClick={handleReorganizeRoutine}
+                onClick={triggerReorganize}
                 disabled={reorganizing}
                 className="w-full md:w-auto px-5 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black rounded-xl transition cursor-pointer flex items-center justify-center gap-2 uppercase tracking-wider shadow shadow-amber-950/30 shrink-0"
               >
@@ -661,6 +686,73 @@ export default function SmartDiagnostic({ studentId, studentName }: SmartDiagnos
                 </div>
               </div>
 
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Confirmation Modal */}
+      {showConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 text-white space-y-4 shadow-2xl">
+            <div className="flex items-center gap-2 text-amber-400">
+              <Zap className="w-6 h-6 fill-amber-400 animate-pulse text-amber-400" />
+              <h3 className="text-base font-black uppercase tracking-wider">Atenção Recruta!</h3>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Deseja que o algoritmo tático reorganize seu ciclo de estudos automaticamente?
+            </p>
+            <div className="bg-slate-950/50 border border-slate-850 p-3 rounded-xl text-[11px] text-slate-400 space-y-1">
+              <p>• Agrupa as matérias pendentes da semana.</p>
+              <p>• Redistribui as matérias de forma equilibrada nos dias restantes.</p>
+              <p>• Ajusta a meta de questões para 12 por dia (volume saudável).</p>
+            </div>
+            <div className="flex gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowConfirm(false)}
+                className="flex-1 px-4 py-2.5 bg-slate-850 hover:bg-slate-800 text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowConfirm(false);
+                  executeReorganize();
+                }}
+                className="flex-1 px-4 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black rounded-xl transition cursor-pointer"
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Alert Modal */}
+      {customAlert && customAlert.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 text-white space-y-4 shadow-2xl">
+            <div className="flex items-center gap-2">
+              {customAlert.type === "success" ? (
+                <CheckCircle className="w-6 h-6 text-emerald-400" />
+              ) : customAlert.type === "warning" ? (
+                <AlertCircle className="w-6 h-6 text-amber-400" />
+              ) : (
+                <XCircle className="w-6 h-6 text-rose-500" />
+              )}
+              <h3 className="text-base font-black uppercase tracking-wider">{customAlert.title}</h3>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">{customAlert.message}</p>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setCustomAlert(null)}
+                className="w-full px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                OK, Entendido
+              </button>
             </div>
           </div>
         </div>

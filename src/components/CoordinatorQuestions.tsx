@@ -215,7 +215,7 @@ export default function CoordinatorQuestions({ currentUser }: CoordinatorQuestio
         setOptions(parsed.options.slice(0, 5).map((opt: string) => stripMarkdownAsterisks(opt)));
         setCorrectOption(parsed.correctOptionIndex ?? 0);
         setExplanation(parsed.explanation ?? "");
-        triggerStatus("Questão tática gerada com sucesso pela I.A. do Tenente! Revise os campos e clique em 'Publicar Questão Tática' para salvar.");
+        triggerStatus("Questão didática gerada com sucesso pela Inteligência Artificial! Revise os campos e clique em 'Publicar Questão' para salvar.");
       } else {
         throw new Error("O formato do JSON retornado pela IA é inválido.");
       }

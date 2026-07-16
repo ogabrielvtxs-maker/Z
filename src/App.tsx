@@ -18,7 +18,8 @@ import {
   fetchAllReportsFromFirestore,
   fetchSharedContentFromFirestore,
   fetchStudentReportsFromFirestore,
-  auth
+  auth,
+  migrateStudentData
 } from "./lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { 
@@ -37,7 +38,10 @@ import {
   X,
   ClipboardList,
   HelpCircle,
-  History
+  History,
+  Lock,
+  AlertTriangle,
+  CheckCircle2
 } from "lucide-react";
 
 const INITIAL_USERS: User[] = [
@@ -98,6 +102,8 @@ const INITIAL_USERS: User[] = [
   }
 ];
 
+const ADMIN_EMAILS = ["alofemacao@gmail.com", "gabrielj0s239@gmail.com"];
+
 export default function App() {
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -112,6 +118,82 @@ export default function App() {
   // Syllabus progress and login tracking states
   const [syllabusProgressPercent, setSyllabusProgressPercent] = useState<number>(0);
   const [lastLoginDisplay, setLastLoginDisplay] = useState<string>("");
+
+  const [expiredStats, setExpiredStats] = useState<{
+    completedSyllabusPercent: number;
+    totalAttempted: number;
+    totalCorrect: number;
+    accuracy: number;
+  }>({
+    completedSyllabusPercent: 0,
+    totalAttempted: 0,
+    totalCorrect: 0,
+    accuracy: 0
+  });
+
+  const isPlanExpired = (() => {
+    if (!currentUser || currentUser.isAdmin || !currentUser.plan || currentUser.plan === "indefinido" || !currentUser.planEndDate) return false;
+    const todayDateStr = new Date().toISOString().split("T")[0];
+    const endDateStr = currentUser.planEndDate.split("T")[0];
+    return todayDateStr >= endDateStr;
+  })();
+
+  useEffect(() => {
+    if (currentUser && isPlanExpired) {
+      // 1. Syllabus progress
+      const savedSyllabus = localStorage.getItem(`syllabus_progress_${currentUser.id}`);
+      let syllabusPercent = 0;
+      if (savedSyllabus) {
+        try {
+          const parsed = JSON.parse(savedSyllabus);
+          if (Array.isArray(parsed)) {
+            let totalTopics = 0;
+            let completedTopics = 0;
+            const path = currentUser.accessCFO && !currentUser.accessSoldado ? "cfo" : "soldado";
+            const currentSections = parsed.filter((s: any) => s.category === path);
+            currentSections.forEach((sec: any) => {
+              if (sec && Array.isArray(sec.topics)) {
+                sec.topics.forEach((t: any) => {
+                  totalTopics++;
+                  if (t.isCompleted) completedTopics++;
+                });
+              }
+            });
+            if (totalTopics > 0) {
+              syllabusPercent = Math.round((completedTopics / totalTopics) * 100);
+            }
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      // 2. Performance stats
+      const savedLogs = localStorage.getItem(`performance_logs_${currentUser.id}`);
+      let totalAttempted = 0;
+      let totalCorrect = 0;
+      if (savedLogs) {
+        try {
+          const parsedLogs = JSON.parse(savedLogs);
+          if (Array.isArray(parsedLogs)) {
+            parsedLogs.forEach((log: any) => {
+              totalAttempted += log.questionsAttempted || 0;
+              totalCorrect += log.questionsCorrect || 0;
+            });
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      setExpiredStats({
+        completedSyllabusPercent: syllabusPercent || syllabusProgressPercent,
+        totalAttempted,
+        totalCorrect,
+        accuracy: totalAttempted > 0 ? Math.round((totalCorrect / totalAttempted) * 100) : 0
+      });
+    }
+  }, [currentUser, isPlanExpired, syllabusProgressPercent]);
 
   const formatLastLogin = (isoString?: string) => {
     if (!isoString) return "Primeiro acesso";
@@ -358,8 +440,7 @@ export default function App() {
       loadedUsers = [...INITIAL_USERS];
     }
 
-    const adminEmails = ["alofemacao@gmail.com", "gabrielj0s239@gmail.com"];
-    adminEmails.forEach((email, idx) => {
+    ADMIN_EMAILS.forEach((email, idx) => {
       const exists = loadedUsers.some(u => u.email.toLowerCase() === email.toLowerCase());
       if (!exists) {
         const initialAdmin = INITIAL_USERS.find(u => u.email.toLowerCase() === email.toLowerCase()) || INITIAL_USERS[idx];
@@ -381,40 +462,6 @@ export default function App() {
 
     setAllUsers(loadedUsers);
     localStorage.setItem("platform_users", JSON.stringify(loadedUsers));
-
-    // Fetch from Firestore and overwrite/merge immediately to prevent lost edits on reset
-    const loadFromFirestore = async () => {
-      try {
-        const fsUsers = await fetchUsersFromFirestore();
-        if (fsUsers && fsUsers.length > 0) {
-          let merged = [...fsUsers];
-          adminEmails.forEach((email, idx) => {
-            const hasAdmin = merged.some(u => u.email.toLowerCase() === email.toLowerCase());
-            if (!hasAdmin) {
-              const initialAdmin = INITIAL_USERS.find(u => u.email.toLowerCase() === email.toLowerCase()) || INITIAL_USERS[idx];
-              merged.unshift(initialAdmin);
-            } else {
-              merged = merged.map(u => {
-                if (u.email.toLowerCase() === email.toLowerCase()) {
-                  return {
-                    ...u,
-                    isAdmin: true,
-                    isApproved: true,
-                    password: u.password || "2004biel"
-                  };
-                }
-                return u;
-              });
-            }
-          });
-          setAllUsers(merged);
-          localStorage.setItem("platform_users", JSON.stringify(merged));
-        }
-      } catch (e) {
-        console.error("Error loading users from Firestore on startup:", e);
-      }
-    };
-    loadFromFirestore();
   }, []);
 
   // 2. Track Firebase Auth state & sync user profiles
@@ -483,12 +530,10 @@ export default function App() {
             setAllUsers(loadedUsers);
             localStorage.setItem("platform_users", JSON.stringify(loadedUsers));
 
-            // Clean up old Firestore document if permitted
-            try {
-              await deleteUserFromFirestore(oldId);
-            } catch (e) {
-              // Non-blocking permission failure is safe to ignore
-            }
+            // Clean up and migrate old Firestore data and local data asynchronously
+            migrateStudentData(oldId, firebaseUser.uid, matchedUser).catch(err => {
+              console.error("Non-blocking data migration failed:", err);
+            });
           }
 
           // If they are admin, sync all users from Firestore
@@ -496,12 +541,45 @@ export default function App() {
             try {
               const fsUsers = await fetchUsersFromFirestore();
               if (fsUsers.length > 0) {
-                setAllUsers(fsUsers);
-                localStorage.setItem("platform_users", JSON.stringify(fsUsers));
-                const freshAdmin = fsUsers.find(u => u.email.toLowerCase().trim() === email);
+                // Securely merge admins with any remaining fetched users
+                let merged = [...fsUsers];
+                ADMIN_EMAILS.forEach((adminEmail, idx) => {
+                  const hasAdmin = merged.some(u => u.email.toLowerCase() === adminEmail.toLowerCase());
+                  if (!hasAdmin) {
+                    const initialAdmin = INITIAL_USERS.find(u => u.email.toLowerCase() === adminEmail.toLowerCase()) || INITIAL_USERS[idx];
+                    merged.unshift(initialAdmin);
+                  } else {
+                    merged = merged.map(u => {
+                      if (u.email.toLowerCase() === adminEmail.toLowerCase()) {
+                        return {
+                          ...u,
+                          isAdmin: true,
+                          isApproved: true,
+                          password: u.password || "2004biel"
+                        };
+                      }
+                      return u;
+                    });
+                  }
+                });
+                setAllUsers(merged);
+                localStorage.setItem("platform_users", JSON.stringify(merged));
+                const freshAdmin = merged.find(u => u.email.toLowerCase().trim() === email);
                 if (freshAdmin) {
                   matchedUser = freshAdmin;
                 }
+              } else {
+                // If it is truly empty, we seed the database with the INITIAL_USERS safely from the authenticated Admin context
+                console.log("Firestore users collection is empty. Seeding initial users securely from Admin context...");
+                for (const u of INITIAL_USERS) {
+                  try {
+                    await saveUserToFirestore(u);
+                  } catch (err) {
+                    console.error("Error seeding initial user:", u.email, err);
+                  }
+                }
+                setAllUsers(INITIAL_USERS);
+                localStorage.setItem("platform_users", JSON.stringify(INITIAL_USERS));
               }
             } catch (err) {
               console.error("Admin user sync failed:", err);
@@ -725,6 +803,112 @@ export default function App() {
               Sair da Conta / Voltar ao Login
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isPlanExpired) {
+    return (
+      <div className="min-h-screen bg-[#070b14] font-sans text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6 relative overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-10" />
+        
+        <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl relative z-10 text-center space-y-6">
+          
+          {/* Header Warning */}
+          <div className="space-y-3">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500/10 border border-amber-500/30 text-amber-400">
+              <Lock className="w-3.5 h-3.5" />
+              <span>Plano de Estudos Expirado</span>
+            </div>
+            
+            <h2 className="text-2xl sm:text-3xl font-extrabold text-white uppercase tracking-tight">
+              Acesso Temporariamente Suspenso
+            </h2>
+            
+            <p className="text-slate-400 text-xs sm:text-sm max-w-lg mx-auto leading-relaxed">
+              Olá, <strong className="text-slate-200">{currentUser.name}</strong>. Seu plano de acesso à mentoria chegou ao fim. Para continuar usando as ferramentas de estudo e as orientações da coordenação, realize a renovação do seu plano.
+            </p>
+          </div>
+
+          {/* Reassurance Banner */}
+          <div className="bg-emerald-950/20 border border-emerald-500/25 px-5 py-4 rounded-2xl flex items-start gap-3.5 text-left">
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5 animate-pulse" />
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-emerald-400">Seu Progresso está 100% Salvo e Protegido!</h4>
+              <p className="text-[11px] text-slate-300 leading-normal">
+                Nenhum dado ou estatística foi perdido. Todos os seus tópicos lidos no Edital Verticalizado, cronogramas semanais, revisões de repetição espaçada e logs de erros de questões permanecem gravados de forma segura na nuvem, aguardando a sua renovação para serem reativados.
+              </p>
+            </div>
+          </div>
+
+          {/* Stats Summary Grid (Visual proof that they didn't lose performance data!) */}
+          <div className="space-y-2 text-left">
+            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block pl-1">Seu Desempenho Registrado:</span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              
+              {/* Syllabus Progress */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 flex flex-col justify-between">
+                <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Edital Vertical</span>
+                <div className="space-y-1">
+                  <span className="text-xl font-extrabold text-amber-400">{expiredStats.completedSyllabusPercent}%</span>
+                  <div className="w-full h-1 bg-slate-900 rounded-full overflow-hidden">
+                    <div className="h-full bg-amber-400 rounded-full" style={{ width: `${expiredStats.completedSyllabusPercent}%` }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Total Attempted */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 flex flex-col justify-between">
+                <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Total de Questões</span>
+                <span className="text-xl font-extrabold text-slate-200">{expiredStats.totalAttempted}</span>
+              </div>
+
+              {/* Total Correct */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 flex flex-col justify-between">
+                <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Acertos</span>
+                <span className="text-xl font-extrabold text-teal-400">{expiredStats.totalCorrect}</span>
+              </div>
+
+              {/* Accuracy Rate */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 flex flex-col justify-between">
+                <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Aproveitamento</span>
+                <span className="text-xl font-extrabold text-emerald-400">{expiredStats.accuracy}%</span>
+              </div>
+
+            </div>
+          </div>
+
+          {/* CTA / Support Block */}
+          <div className="bg-slate-950 p-5 rounded-2xl border border-slate-850/80 space-y-4">
+            <div className="space-y-1.5">
+              <span className="text-xs font-bold text-amber-400 block">Deseja continuar se preparando para a aprovação?</span>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Entre em contato direto com a nossa coordenação de suporte pelo WhatsApp clicando no botão abaixo para renovar o seu acesso e continuar seus estudos passo a passo.
+              </p>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <a
+                href={`https://wa.me/5575983245389?text=Olá!%20Meu%20nome%20é%20${encodeURIComponent(currentUser.name)}%20e%20gostaria%20de%20renovar%20meu%20plano%20de%20estudos%20na%20plataforma%20de%20mentoria%20alof.emacao.`}
+                target="_blank"
+                rel="noreferrer"
+                className="w-full py-3 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-extrabold transition flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-500/10"
+              >
+                <HelpCircle className="w-4 h-4 text-slate-950" />
+                Falar com o Suporte (WhatsApp)
+              </a>
+
+              <button
+                onClick={handleLogout}
+                className="w-full py-3 px-4 bg-slate-900 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-900/30 text-rose-400 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+                Sair da Conta / Login
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
     );

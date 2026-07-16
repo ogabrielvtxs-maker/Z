@@ -12,6 +12,7 @@ import {
   Check, 
   Save, 
   ArrowRight,
+  ArrowLeft,
   ShieldCheck,
   AlertTriangle,
   Volume2,
@@ -19,7 +20,10 @@ import {
   Play,
   Pause,
   Camera,
-  FileDown
+  FileDown,
+  Layers,
+  Send,
+  RefreshCw
 } from "lucide-react";
 import { saveContentItemToFirestore } from "../lib/firebase";
 import { cleanAiOutputText } from "../lib/textCleanup";
@@ -33,12 +37,12 @@ interface TenenteIAModalProps {
 }
 
 const MOTIVATIONAL_PHRASES = [
-  "Soldado que estuda com estratégia vence a batalha antes do primeiro tiro!",
-  "Analisando a jurisprudência e doutrina preferida da banca PMBA...",
-  "O suor no treino poupa o sangue no campo de batalha!",
-  "Montando mnemônicos cirúrgicos para fixação do conteúdo...",
-  "Estruturando 20 questões táticas com gabarito comentado...",
-  "Estudando com consistência militar para garantir sua farda!"
+  "Estudante que se prepara com método e constância alcança a aprovação passo a passo!",
+  "Analisando a jurisprudência e a doutrina recomendada para a banca PMBA...",
+  "O estudo diário e consistente constrói a base sólida para o dia da prova!",
+  "Elaborando mnemônicos didáticos e esquemas para fixação profunda do conteúdo...",
+  "Estruturando 20 questões detalhadas com gabarito comentado passo a passo...",
+  "Estudando com planejamento estratégico para garantir o seu sucesso profissional!"
 ];
 
 export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTitle, currentUser }: TenenteIAModalProps) {
@@ -49,6 +53,13 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
   const [copied, setCopied] = useState<boolean>(false);
   const [savedToLibrary, setSavedToLibrary] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
+
+  // States for new interactive capabilities
+  const [currentAction, setCurrentAction] = useState<string>("");
+  const [flashcards, setFlashcards] = useState<{ front: string; back: string }[]>([]);
+  const [currentFlashcardIndex, setCurrentFlashcardIndex] = useState<number>(0);
+  const [showAnswer, setShowAnswer] = useState<boolean>(false);
+  const [flashcardViewMode, setFlashcardViewMode] = useState<"interactive" | "text">("interactive");
 
   // OCR upload state
   const [ocrLoading, setOcrLoading] = useState<boolean>(false);
@@ -69,12 +80,14 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
 
   if (!isOpen) return null;
 
-  const triggerAIAction = async (action: "explain" | "summarize" | "questions") => {
+  const triggerAIAction = async (action: "explain" | "summarize" | "questions" | "flashcards" | "ask_doubt") => {
     setLoading(true);
+    setCurrentAction(action);
     setErrorMsg("");
     setSavedToLibrary(false);
     setCopied(false);
     handleStopSpeech();
+    setFlashcards([]);
 
     // Rotate phrases randomly during generation
     const interval = setInterval(() => {
@@ -101,6 +114,35 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
 
       if (res.ok && data.text) {
         setResponseText(data.text);
+        if (action === "flashcards") {
+          const cards: { front: string; back: string }[] = [];
+          const sections = data.text.split("---");
+          sections.forEach((sec: string) => {
+            const trimmed = sec.trim();
+            if (!trimmed) return;
+            
+            let front = "";
+            let back = "";
+            
+            const frontMatch = trimmed.match(/Frente:\s*([\s\S]*?)(?=Verso:|$)/i);
+            const backMatch = trimmed.match(/Verso:\s*([\s\S]*?)$/i);
+            
+            if (frontMatch && frontMatch[1]) {
+              front = frontMatch[1].trim();
+            }
+            if (backMatch && backMatch[1]) {
+              back = backMatch[1].trim();
+            }
+            
+            if (front && back) {
+              cards.push({ front, back });
+            }
+          });
+          setFlashcards(cards);
+          setCurrentFlashcardIndex(0);
+          setShowAnswer(false);
+          setFlashcardViewMode("interactive");
+        }
       } else {
         setErrorMsg(data.error || "Ocorreu um erro inesperado ao se conectar com o Tenente IA.");
       }
@@ -673,8 +715,8 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
               <Sparkles className="w-4 h-4" />
             </div>
             <div>
-              <span className="text-[9px] text-amber-400 font-black uppercase tracking-wider block">Sala de Instrução</span>
-              <h3 className="text-sm font-black text-white uppercase tracking-wider">Tenente IA • Consultor de Elite</h3>
+              <span className="text-[9px] text-amber-400 font-black uppercase tracking-wider block">Área de Aprendizado</span>
+              <h3 className="text-sm font-black text-white uppercase tracking-wider">Mentor de Estudos IA • Auxiliar Didático</h3>
             </div>
           </div>
           <button 
@@ -715,29 +757,46 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
               <textarea
                 value={contextText}
                 onChange={(e) => setContextText(e.target.value)}
-                placeholder="Ex: Cole aqui uma questão sobre este assunto que você errou, ou digite uma dúvida conceitual específica para o Tenente IA desmistificar..."
+                placeholder="Ex: Cole aqui uma questão sobre este assunto que você errou, ou digite uma dúvida conceitual específica para o Mentor de Estudos IA desmistificar e ensinar passo a passo..."
                 rows={3}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 resize-none"
               />
               
-              {/* OCR Image Scanner trigger */}
-              <div className="flex items-center gap-2 mt-2">
-                <label className="flex items-center gap-1.5 bg-slate-950 hover:bg-slate-850 border border-slate-800 text-slate-300 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer">
-                  <Camera className="w-3.5 h-3.5 text-amber-500" />
-                  <span>OCR: Ler Texto de Imagem (Questão)</span>
-                  <input type="file" accept="image/*" onChange={handleOCRUpload} className="hidden" disabled={ocrLoading} />
-                </label>
-                {ocrLoading && (
-                  <span className="text-[10px] text-amber-400 flex items-center gap-1 animate-pulse">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    Extraindo texto via IA...
-                  </span>
-                )}
+              {/* OCR Image Scanner & Enviar Dúvida Button */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-2">
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 bg-slate-950 hover:bg-slate-850 border border-slate-800 text-slate-300 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer">
+                    <Camera className="w-3.5 h-3.5 text-amber-500" />
+                    <span>OCR: Ler Texto de Imagem (Questão)</span>
+                    <input type="file" accept="image/*" onChange={handleOCRUpload} className="hidden" disabled={ocrLoading} />
+                  </label>
+                  {ocrLoading && (
+                    <span className="text-[10px] text-amber-400 flex items-center gap-1 animate-pulse">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Extraindo texto via IA...
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => {
+                    if (!contextText.trim()) {
+                      alert("Por favor, digite sua dúvida ou cole uma questão no campo acima antes de enviar!");
+                      return;
+                    }
+                    triggerAIAction("ask_doubt");
+                  }}
+                  disabled={loading}
+                  className="px-4 py-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 disabled:opacity-50 text-slate-950 font-black text-xs rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-amber-400/10 cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5 text-slate-950" />
+                  Enviar Dúvida para o Mentor
+                </button>
               </div>
             </div>
 
             {/* Direct AI Action triggers */}
-            <div className="md:col-span-12 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="md:col-span-12 grid grid-cols-1 sm:grid-cols-4 gap-3">
               <button
                 onClick={() => triggerAIAction("explain")}
                 disabled={loading}
@@ -753,7 +812,16 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
                 className="flex items-center justify-center gap-2 p-3 bg-slate-950 hover:bg-slate-850 text-slate-200 hover:text-white rounded-xl border border-slate-800 hover:border-amber-400/40 transition cursor-pointer font-bold text-xs disabled:opacity-50 group"
               >
                 <FileText className="w-4 h-4 text-emerald-400 group-hover:scale-110 transition-transform" />
-                <span>Gerar Resumo Esquematizado</span>
+                <span>Gerar Resumo</span>
+              </button>
+
+              <button
+                onClick={() => triggerAIAction("flashcards")}
+                disabled={loading}
+                className="flex items-center justify-center gap-2 p-3 bg-slate-950 hover:bg-slate-850 text-slate-200 hover:text-white rounded-xl border border-slate-800 hover:border-amber-400/40 transition cursor-pointer font-bold text-xs disabled:opacity-50 group bg-slate-950"
+              >
+                <Layers className="w-4 h-4 text-amber-400 group-hover:scale-110 transition-transform" />
+                <span>Gerar Flashcards</span>
               </button>
 
               <button
@@ -762,7 +830,7 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
                 className="flex items-center justify-center gap-2 p-3 bg-slate-950 hover:bg-slate-850 text-slate-200 hover:text-white rounded-xl border border-slate-800 hover:border-amber-400/40 transition cursor-pointer font-bold text-xs disabled:opacity-50 group"
               >
                 <Target className="w-4 h-4 text-violet-400 group-hover:scale-110 transition-transform" />
-                <span>Gerar 20 Questões de Prova</span>
+                <span>Gerar 20 Questões</span>
               </button>
             </div>
           </div>
@@ -772,7 +840,7 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
             <div className="bg-slate-950/60 border border-slate-850 p-12 rounded-3xl flex flex-col items-center justify-center text-center space-y-4 min-h-[300px]">
               <Loader2 className="w-10 h-10 text-amber-400 animate-spin" />
               <div className="space-y-1">
-                <h4 className="text-sm font-bold text-white uppercase tracking-wider">Tenente IA está processando...</h4>
+                <h4 className="text-sm font-bold text-white uppercase tracking-wider">Mentor de Estudos IA está processando...</h4>
                 <p className="text-xs text-amber-400/80 italic max-w-md">
                   "{currentPhrase}"
                 </p>
@@ -798,7 +866,7 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
               <div className="flex flex-wrap items-center justify-between gap-2.5 bg-slate-950 px-4 py-2.5 rounded-xl border border-slate-850">
                 <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1">
                   <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  Instrução militar gerada com sucesso!
+                  Explicação pedagógica gerada com sucesso!
                 </span>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -879,12 +947,144 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
                 </div>
               </div>
 
-              {/* Text content card */}
-              <div className="bg-slate-950/80 border border-slate-850/80 p-6 rounded-2xl overflow-y-auto max-h-[400px] shadow-inner select-text">
-                <div className="prose prose-invert max-w-none space-y-3 font-sans">
-                  {renderRichMarkdown(responseText)}
+              {/* If action is flashcards and we have cards, show the card study desk! */}
+              {currentAction === "flashcards" && flashcards.length > 0 ? (
+                <div className="space-y-4">
+                  {/* View mode toggle */}
+                  <div className="flex items-center justify-between bg-slate-950 px-4 py-2.5 rounded-xl border border-slate-850">
+                    <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                      <Layers className="w-4 h-4" />
+                      Baralho de Memorização Ativa (IA)
+                    </span>
+                    <div className="flex gap-1 bg-slate-900 p-0.5 rounded-lg border border-slate-800">
+                      <button
+                        onClick={() => setFlashcardViewMode("interactive")}
+                        className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded-md transition cursor-pointer ${
+                          flashcardViewMode === "interactive"
+                            ? "bg-amber-400 text-slate-950 font-black"
+                            : "text-slate-400 hover:text-white"
+                        }`}
+                      >
+                        Interativo
+                      </button>
+                      <button
+                        onClick={() => setFlashcardViewMode("text")}
+                        className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded-md transition cursor-pointer ${
+                          flashcardViewMode === "text"
+                            ? "bg-amber-400 text-slate-950 font-black"
+                            : "text-slate-400 hover:text-white"
+                        }`}
+                      >
+                        Texto Completo
+                      </button>
+                    </div>
+                  </div>
+
+                  {flashcardViewMode === "interactive" ? (
+                    <div className="flex flex-col items-center justify-center py-4 space-y-4">
+                      {/* Interactive Card */}
+                      <div
+                        onClick={() => setShowAnswer(!showAnswer)}
+                        className={`w-full max-w-lg min-h-[220px] bg-slate-950 border ${
+                          showAnswer ? "border-emerald-500/40 shadow-lg shadow-emerald-500/5" : "border-amber-500/40 shadow-lg shadow-amber-500/5"
+                        } rounded-3xl p-6 flex flex-col justify-between cursor-pointer transition-all duration-300 transform hover:scale-[1.01] active:scale-[0.99] select-none text-center relative overflow-hidden`}
+                      >
+                        {/* Background Watermark decoration */}
+                        <div className="absolute right-3 top-3 opacity-[0.02] text-slate-100 select-none pointer-events-none">
+                          <Sparkles className="w-40 h-40" />
+                        </div>
+
+                        {/* Card Header/Badge */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] font-bold tracking-widest uppercase font-mono text-slate-500">
+                            Frente de Memorização
+                          </span>
+                          <span className={`text-[9px] font-bold px-2.5 py-0.5 rounded-full uppercase ${
+                            showAnswer ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-amber-400/10 text-amber-400 border border-amber-400/20"
+                          }`}>
+                            {showAnswer ? "Gabarito / Verso" : "Pergunta / Frente"}
+                          </span>
+                        </div>
+
+                        {/* Card Body - Content */}
+                        <div className="my-auto py-4">
+                          {!showAnswer ? (
+                            <h4 className="text-sm sm:text-base font-extrabold text-slate-100 leading-relaxed max-w-md mx-auto">
+                              {flashcards[currentFlashcardIndex].front}
+                            </h4>
+                          ) : (
+                            <p className="text-xs sm:text-sm font-semibold text-slate-300 leading-relaxed max-w-md mx-auto whitespace-pre-wrap">
+                              {flashcards[currentFlashcardIndex].back}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Card Footer */}
+                        <div className="flex items-center justify-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500 animate-pulse mt-3">
+                          <RefreshCw className="w-3.5 h-3.5 text-amber-500" />
+                          <span>Clique no cartão para {showAnswer ? "ver a pergunta" : "revelar a resposta"}</span>
+                        </div>
+                      </div>
+
+                      {/* Navigation Controls */}
+                      <div className="w-full max-w-lg flex items-center justify-between px-2">
+                        <button
+                          onClick={() => {
+                            if (currentFlashcardIndex > 0) {
+                              setCurrentFlashcardIndex(currentFlashcardIndex - 1);
+                              setShowAnswer(false);
+                            }
+                          }}
+                          disabled={currentFlashcardIndex === 0}
+                          className="p-2.5 bg-slate-950 hover:bg-slate-850 border border-slate-800 disabled:opacity-30 rounded-xl transition text-slate-300 hover:text-white cursor-pointer"
+                        >
+                          <ArrowLeft className="w-4 h-4" />
+                        </button>
+
+                        <div className="flex flex-col items-center">
+                          <span className="text-xs font-mono font-bold text-slate-400">
+                            {currentFlashcardIndex + 1} de {flashcards.length}
+                          </span>
+                          {/* Horizontal Progress bar */}
+                          <div className="w-24 h-1 bg-slate-950 rounded-full mt-1.5 overflow-hidden">
+                            <div
+                              className="h-full bg-amber-400 transition-all duration-300"
+                              style={{ width: `${((currentFlashcardIndex + 1) / flashcards.length) * 100}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => {
+                            if (currentFlashcardIndex < flashcards.length - 1) {
+                              setCurrentFlashcardIndex(currentFlashcardIndex + 1);
+                              setShowAnswer(false);
+                            }
+                          }}
+                          disabled={currentFlashcardIndex === flashcards.length - 1}
+                          className="p-2.5 bg-slate-950 hover:bg-slate-850 border border-slate-800 disabled:opacity-30 rounded-xl transition text-slate-300 hover:text-white cursor-pointer"
+                        >
+                          <ArrowRight className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Text full view */
+                    <div className="bg-slate-950/80 border border-slate-850/80 p-6 rounded-2xl overflow-y-auto max-h-[400px] shadow-inner select-text">
+                      <div className="prose prose-invert max-w-none space-y-3 font-sans">
+                        {renderRichMarkdown(responseText)}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
+              ) : (
+                /* Default response text layout */
+                <div className="bg-slate-950/80 border border-slate-850/80 p-6 rounded-2xl overflow-y-auto max-h-[400px] shadow-inner select-text">
+                  <div className="prose prose-invert max-w-none space-y-3 font-sans">
+                    {renderRichMarkdown(responseText)}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -893,13 +1093,13 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
         {/* Modal Footer */}
         <div className="bg-slate-950 px-6 py-4 border-t border-slate-800/80 flex items-center justify-between">
           <span className="text-[10px] text-slate-500 font-mono">
-            Plataforma Militar de Estudos • Tenente IA v2.5
+            Plataforma Avançada de Estudos • Mentor de Estudos IA
           </span>
           <button
             onClick={onClose}
             className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl text-xs font-extrabold cursor-pointer transition border border-slate-850"
           >
-            Fechar Sala de Instrução
+            Fechar Espaço de Estudos
           </button>
         </div>
 

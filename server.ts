@@ -6,6 +6,69 @@ import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
+// Helper function to call generateContent with retry logic and fallback to avoid 503/UNAVAILABLE errors
+async function generateContentWithRetry(
+  ai: GoogleGenAI,
+  params: {
+    model?: string;
+    contents: any;
+    config?: any;
+  }
+) {
+  const primaryModel = params.model || "gemini-3.5-flash";
+  const fallbackModel = "gemini-3.1-flash-lite"; // High-availability fallback model
+  const maxRetries = 3;
+  let delay = 1000; // start with 1s
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[AI] Attempt ${attempt} to generate content using model: ${primaryModel}`);
+      const response = await ai.models.generateContent({
+        model: primaryModel,
+        contents: params.contents,
+        config: params.config,
+      });
+      return response;
+    } catch (err: any) {
+      const isTransient = 
+        err.status === 503 || 
+        err.status === 429 || 
+        (err.message && (
+          err.message.includes("503") || 
+          err.message.includes("429") || 
+          err.message.includes("high demand") || 
+          err.message.includes("temporary") ||
+          err.message.includes("UNAVAILABLE")
+        ));
+      
+      if (isTransient && attempt < maxRetries) {
+        console.warn(`[AI] Transient error (attempt ${attempt}/${maxRetries}): ${err.message || err}. Retrying in ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay *= 2; // exponential backoff
+      } else {
+        // If it's the last attempt or not a retryable transient error, let's try fallback model if appropriate
+        if (primaryModel !== fallbackModel) {
+          console.warn(`[AI] Primary model failed or max retries reached. Falling back to ${fallbackModel}. Error:`, err);
+          try {
+            console.log(`[AI] Attempting with fallback model: ${fallbackModel}`);
+            const response = await ai.models.generateContent({
+              model: fallbackModel,
+              contents: params.contents,
+              config: params.config,
+            });
+            return response;
+          } catch (fallbackErr: any) {
+            console.error(`[AI] Fallback model ${fallbackModel} also failed:`, fallbackErr);
+            throw fallbackErr; // throw original or fallback error
+          }
+        }
+        throw err;
+      }
+    }
+  }
+  throw new Error("Failed to generate content after retries");
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -50,10 +113,10 @@ async function startServer() {
       };
 
       const textPart = {
-        text: "Você é um assistente de extração de texto militar especialista em concursos (OCR). Extraia todo o texto legível desta imagem de forma idêntica e organizada. Se a imagem contiver uma questão de múltipla escolha de concurso público (PMBA), formate o enunciado e as alternativas (A, B, C, D, E) perfeitamente de forma limpa, retirando marcações de caneta, números de página ou anotações extras desnecessárias, preservando apenas o texto puro da questão e alternativas. Responda apenas com o texto extraído e formatado.",
+        text: "Você é um assistente profissional de extração de texto especialista em concursos públicos (OCR). Extraia todo o texto legível desta imagem de forma idêntica e organizada. Se a imagem contiver uma questão de múltipla escolha de concurso público (PMBA), formate o enunciado e as alternativas (A, B, C, D, E) perfeitamente de forma limpa, retirando marcações de caneta, números de página ou anotações extras desnecessárias, preservando apenas o texto puro da questão e alternativas. Responda apenas com o texto extraído e formatado.",
       };
 
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithRetry(ai, {
         model: "gemini-3.5-flash",
         contents: { parts: [imagePart, textPart] },
         config: {
@@ -90,25 +153,55 @@ async function startServer() {
         }
       });
 
-      const systemPrompt = "Você é o Tenente IA, um instrutor militar virtual e coordenador especialista de alto rendimento focado nos concursos da PMBA (CFO e Soldado). Suas explicações são cirúrgicas, baseadas estritamente na lei e jurisprudência aplicável à banca, com tom disciplinado, motivador e focado na aprovação do recruta. Sempre responda em português do Brasil e formate as respostas de maneira impecável usando Markdown, títulos em negrito, tabelas e mnemônicos.";
+      const systemPrompt = "Você é o Mentor de Estudos IA, um professor e pedagogo especialista em preparação de alto rendimento para concursos públicos (CFO e Soldado PMBA). Seu tom de voz é estritamente profissional, didático, acolhedor e focado no ensino passo a passo detalhado, sem o uso de jargões militares, referências bélicas ou termos como 'recruta', 'soldado', 'batalha' ou 'combate'. Suas explicações devem ser claras, estruturadas, baseadas estritamente na lei e jurisprudência, usando formatações impecáveis com Markdown, tabelas, tópicos claros e mnemônicos pedagógicos para facilitar o aprendizado e a memorização.";
       let prompt = "";
       let responseSchema: any = undefined;
 
       if (action === "explain") {
-        prompt = `Explique detalhadamente o assunto "${topic}" dentro da disciplina de "${subject}". \n\n${contextText ? `Dúvida específica ou questão do aluno: ${contextText}\n\n` : ""}Por favor, inclua:\n1. Conceito principal e base jurídica/teórica aplicável\n2. Pontos de atenção e possíveis pegadinhas que a banca costuma cobrar nos concursos militares da Bahia (CFO e Soldado)\n3. Um exemplo prático ou mnemônico para fixação absoluta.`;
+        prompt = `Explique detalhadamente o assunto "${topic}" dentro da disciplina de "${subject}". \n\n${contextText ? `Dúvida específica ou questão do aluno: ${contextText}\n\n` : ""}Por favor, inclua:\n1. Conceito principal e base jurídica/teórica aplicável\n2. Pontos de atenção e possíveis pegadinhas que a banca costuma cobrar nos concursos de Oficial (CFO) e Soldado da Bahia\n3. Um exemplo prático ou mnemônico didático passo a passo para fixação absoluta.`;
       } else if (action === "summarize") {
-        prompt = `Monte um resumo tático esquematizado de alta memorização para o assunto "${topic}" da disciplina de "${subject}". \n\nEstruture o resumo with tópicos claros, tabelas em Markdown e mnemônicos de fixação rápida. Ao final, inclua uma seção "Checklist dos 5 Pontos de Ouro" indispensáveis para revisar na véspera da prova.`;
+        prompt = `Monte um resumo estratégico e didático estruturado passo a passo de alta memorização para o assunto "${topic}" da disciplina de "${subject}". \n\nEstruture o resumo com tópicos claros, tabelas em Markdown e mnemônicos pedagógicos de fixação rápida. Ao final, inclua uma seção "Checklist dos 5 Pontos de Ouro" indispensáveis para revisar na véspera da prova.`;
       } else if (action === "questions") {
-        prompt = `Gere exatamente 20 questões semelhantes de múltipla escolha focadas no concurso da PMBA para o assunto "${topic}" da disciplina de "${subject}". \n\nAs questões devem cobrir o nível exigido para os concursos da Bahia. Para cada questão:\n- Insira o enunciado claro com 5 alternativas (A, B, C, D, E).\n- Logo após cada questão, inclua o Gabarito Comentado explicativo justificando por que a resposta correta é aquela e por que as outras estão incorretas.\n\nFormate as questões de forma legível e numerada de 1 a 20.`;
+        prompt = `Gere exatamente 20 questões semelhantes de múltipla escolha focadas no concurso da PMBA para o assunto "${topic}" da disciplina de "${subject}". \n\nAs questões devem cobrir o nível exigido para os concursos da Bahia. Para cada questão:\n- Insira o enunciado claro com 5 alternativas (A, B, C, D, E).\n- Logo após cada questão, inclua o Gabarito Comentado didático explicativo justificando passo a passo por que a resposta correta é aquela e por que as outras estão incorretas.\n\nFormate as questões de forma legível e numerada de 1 a 20.`;
+      } else if (action === "flashcards") {
+        prompt = `Gere uma série de Flashcards de estudo estratégico de memorização ativa para o assunto "${topic}" dentro da disciplina de "${subject}", focados nas exigências e na cobrança típica do concurso CFO/Soldado PMBA. 
+        
+        Gere exatamente 8 a 10 flashcards de alta qualidade.
+        Para cada flashcard, você DEVE formatá-lo RIGOROSAMENTE conforme o modelo abaixo, usando "Frente:" e "Verso:" para que nosso sistema possa lê-los e exibi-los em cartões interativos que giram na tela:
+
+        ---
+        Frente: [Sua pergunta cirúrgica sobre lei seca, jurisprudência, prazos ou conceitos fundamentais aqui]
+        Verso: [Sua resposta objetiva, didática e direta fundamentada pedagogicamente aqui]
+        ---
+
+        Exemplo de formato:
+        ---
+        Frente: Qual o prazo prescricional para a ação disciplinar de demissão no estatuto dos funcionários civis aplicável por analogia ou lei estadual específica da Bahia?
+        Verso: O prazo de prescrição é de 5 anos para as infrações puníveis com demissão, cassação de aposentadoria ou disponibilidade.
+        ---
+
+        Certifique-se de que cada flashcard seja separado por uma linha "---" e use exatamente as tags "Frente:" e "Verso:".`;
+      } else if (action === "ask_doubt") {
+        prompt = `Responda de forma extremamente didática, atenciosa e esclarecedora à seguinte dúvida conceitual ou análise de questão enviada pelo aluno sobre o assunto "${topic}" da disciplina de "${subject}":
+        
+        ---
+        DÚVIDA / QUESTÃO DO ALUNO:
+        "${contextText || "Por favor, explique os pontos mais difíceis deste assunto."}"
+        ---
+        
+        Por favor:
+        1. Desmantele a dúvida passo a passo, explicando o conceito de forma simples, objetiva e livre de jargões bélicos desnecessários.
+        2. Se for uma questão colada pelo aluno, indique qual é a resposta correta, explicando o erro das demais e fundamentando diretamente nos artigos de lei (Constituição, Código Penal, Estatuto da PMBA, etc.).
+        3. Forneça uma dica de memorização, mnemônico pedagógico ou macete prático para o aluno nunca mais esquecer este assunto e garantir seu ponto na prova.`;
       } else if (action === "generate_report") {
-        prompt = `Você é o Tenente IA, coordenador e tutor de elite da PMBA. Redija um parecer de desempenho tático semanal personalizado e cirúrgico para o aluno "${studentName || "Recruta"}" na semana de número ${week || "atual"}. 
-        Use um tom altamente disciplinado, militarizado, focado na aprovação e ao mesmo tempo acolhedor e estratégico. 
-        Analise o histórico de questões e progresso relatado abaixo:
+        prompt = `Você é o Mentor de Estudos IA, coordenador pedagógico e tutor de alto rendimento. Redija um relatório de desempenho semanal personalizado e detalhado para o aluno "${studentName || "Estudante"}" na semana de número ${week || "atual"}. 
+        Use um tom altamente profissional, didático, focado na aprovação, estimulante e estratégico, sem jargões militares ou termos como 'recruta', 'tático' ou 'diretriz militar'. 
+        Analise o histórico de questões e progresso do estudante relatado abaixo:
         ---
         ${performanceData || "Nenhum histórico lançado nesta semana."}
         ---
-        Seu parecer deve avaliar as áreas em que o aluno está indo bem e destacar onde ele precisa focar com urgência (qualquer disciplina com aproveitamento inferior a 75% deve ser apontada como atenção vermelha). Dê conselhos práticos de estudo (revisão de lei seca, resumos, refazer erros) e termine com uma diretriz militar motivadora de impacto. 
-        Retorne APENAS o parecer em formato de texto limpo, sem cabeçalhos genéricos repetitivos, sem tags de imagem, e sem tags HTML de quebra de linha. Utilize parágrafos simples e limpos.`;
+        Seu relatório de parecer pedagógico deve avaliar as áreas em que o aluno está tendo um bom rendimento e destacar onde ele precisa focar com urgência (qualquer disciplina com aproveitamento inferior a 75% deve ser apontada como atenção recomendada). Dê conselhos didáticos e práticos de estudo passo a passo (revisão de lei seca, de resumos, e revisão de erros) e termine com uma orientação motivacional e pedagógica de impacto. 
+        Retorne APENAS o relatório em formato de texto limpo, sem cabeçalhos genéricos repetitivos, sem tags de imagem, e sem tags HTML de quebra de linha. Utilize parágrafos simples e limpos.`;
       } else if (action === "generate_question") {
         const isTextInterpretation = 
           (subject || "").toLowerCase().includes("portuguesa") && 
@@ -172,7 +265,7 @@ async function startServer() {
         return res.status(400).json({ error: "Ação de IA inválida" });
       }
 
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithRetry(ai, {
         model: "gemini-3.5-flash",
         contents: prompt,
         config: {
@@ -187,7 +280,7 @@ async function startServer() {
     } catch (err: any) {
       console.error("Erro no processamento da IA:", err);
       res.status(500).json({ 
-        error: "Falha ao consultar a Inteligência Artificial do Tenente IA: " + (err.message || "Erro de Conexão") 
+        error: "Falha ao consultar a Inteligência Artificial do Mentor de Estudos IA: " + (err.message || "Erro de Conexão") 
       });
     }
   });

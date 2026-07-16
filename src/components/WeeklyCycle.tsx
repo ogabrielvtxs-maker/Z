@@ -175,42 +175,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
     }
   };
 
-  const handleToggleDynamicRevision = (sectionId: string, topicId: string) => {
-    const confirmDone = window.confirm("Você concluiu esta sessão de revisão? Ao confirmar, ela será removida do ciclo de pendências e contabilizada em seu progresso.");
-    if (!confirmDone) return;
 
-    const savedSyllabus = localStorage.getItem(`syllabus_progress_${currentUser.id}`);
-    if (!savedSyllabus) return;
-
-    try {
-      const parsed: SyllabusSection[] = JSON.parse(savedSyllabus);
-      const updated = parsed.map((section) => {
-        if (section.id === sectionId) {
-          const updatedTopics = section.topics.map((topic) => {
-            if (topic.id === topicId) {
-              return {
-                ...topic,
-                isRevision: false, // cleared from active revision cycle
-                isCompleted: true, // count as read
-                studyCount: (topic.studyCount || 0) + 1
-              };
-            }
-            return topic;
-          });
-          return { ...section, topics: updatedTopics };
-        }
-        return section;
-      });
-
-      localStorage.setItem(`syllabus_progress_${currentUser.id}`, JSON.stringify(updated));
-      loadRevisionAlerts();
-      
-      // Notify other views
-      window.dispatchEvent(new Event("storage"));
-    } catch (e) {
-      console.error(e);
-    }
-  };
 
   useEffect(() => {
     loadRevisionAlerts();
@@ -755,39 +720,11 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                 const originalIdx = cycle.days.findIndex((d) => d.dayNumber === day.dayNumber);
                 const actualDayNum = ((cycle?.weekNumber || 1) - 1) * 7 + day.dayNumber;
 
-                // Find all topics marked for revision for this specific day
-                const dayRevisionItems: { id: string; sectionId: string; subject: string; title: string; revisionType: "questoes" | "flashcards" }[] = [];
-                
-                syllabusProgress.forEach((section) => {
-                  section.topics.forEach((topic) => {
-                    if (topic.isRevision) {
-                      // Check if the subject name contains/matches the day subjects
-                      const isSubjectMatch = day.subjects.some((sub) => 
-                        sub.name.toLowerCase().includes(section.subject.toLowerCase()) ||
-                        section.subject.toLowerCase().includes(sub.name.toLowerCase())
-                      );
-                      
-                      // Fallback: distribute evenly among days based on title hash if no matching day
-                      const dayIdMatched = isSubjectMatch || (((topic.title.length + topic.id.length) % 7) + 1 === day.dayNumber);
-                      
-                      if (dayIdMatched) {
-                        dayRevisionItems.push({
-                           id: topic.id,
-                           sectionId: section.id,
-                           subject: section.subject,
-                           title: topic.title,
-                           revisionType: topic.revisionType || "questoes"
-                        });
-                      }
-                    }
-                  });
-                });
-
                 return (
                   <div
                     key={day.dayNumber}
                     className={`border rounded-xl p-4 flex flex-col justify-between transition ${
-                      day.completed && dayRevisionItems.length === 0
+                      day.completed
                         ? "bg-emerald-950/25 border-emerald-500/30 text-emerald-100"
                         : "bg-slate-900/90 border-slate-800 text-white hover:border-slate-700"
                     }`}
@@ -799,7 +736,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                       </span>
                       <span
                         className={`w-2.5 h-2.5 rounded-full ${
-                          day.completed && dayRevisionItems.length === 0 ? "bg-emerald-400 animate-pulse" : "bg-amber-500"
+                          day.completed ? "bg-emerald-400 animate-pulse" : "bg-amber-500"
                         }`}
                         title={day.completed ? "Metas Concluídas" : "Pendências Pendentes"}
                       />
@@ -830,94 +767,22 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                         </button>
                       ))}
 
-                      {/* Active Revision Items */}
-                      {dayRevisionItems.map((rev) => (
-                        <button
-                          key={rev.id}
-                          onClick={() => handleToggleDynamicRevision(rev.sectionId, rev.id)}
-                          className={`w-full text-left flex items-start gap-2 p-1.5 rounded-lg border transition cursor-pointer group ${
-                            rev.revisionType === "questoes"
-                              ? "bg-indigo-950/25 border-indigo-500/30 hover:border-indigo-500/60 text-indigo-200"
-                              : "bg-fuchsia-950/25 border-fuchsia-500/30 hover:border-fuchsia-500/60 text-fuchsia-200"
-                          }`}
-                        >
-                          <div className="shrink-0 mt-0.5">
-                            <Square className={`w-4 h-4 ${
-                              rev.revisionType === "questoes" ? "text-indigo-400 group-hover:text-indigo-300" : "text-fuchsia-400 group-hover:text-fuchsia-300"
-                            }`} />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <span className="text-[9px] uppercase tracking-wider font-black block opacity-85">
-                              {rev.revisionType === "questoes" ? "⚡ Rev: Exercícios" : "📇 Rev: Flashcard"}
-                            </span>
-                            <span className="text-[10px] leading-tight font-extrabold block truncate">
-                              {rev.title}
-                            </span>
-                            <span className="text-[8px] opacity-65 block truncate uppercase font-bold">
-                              {rev.subject}
-                            </span>
-                          </div>
-                        </button>
-                      ))}
-
-                      {day.subjects.length === 0 && dayRevisionItems.length === 0 && (
+                      {day.subjects.length === 0 && (
                         <span className="text-[10px] text-slate-500 italic block">Descanso planejado</span>
                       )}
                     </div>
 
-                    {/* Observações / Anotações */}
-                    <div className="mt-4 pt-3 border-t border-slate-850/60 text-left">
-                      {editingNotesDay === day.dayNumber ? (
-                        <div className="space-y-2">
-                          <textarea
-                            value={tempNotes}
-                            onChange={(e) => setTempNotes(e.target.value)}
-                            placeholder="Escreva suas observações, dúvidas ou resumo rápido deste dia..."
-                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[11px] text-slate-200 placeholder-slate-500 focus:outline-none focus:border-amber-400 font-sans"
-                            rows={3}
-                            autoFocus
-                          />
-                          <div className="flex justify-end gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setEditingNotesDay(null)}
-                              className="px-2.5 py-1 text-[10px] font-bold text-slate-400 hover:text-slate-200 bg-slate-850 rounded-md cursor-pointer transition"
-                            >
-                              Cancelar
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleSaveNotes(day.dayNumber, tempNotes)}
-                              className="px-2.5 py-1 text-[10px] font-black text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-md cursor-pointer transition flex items-center gap-1"
-                            >
-                              Salvar
-                            </button>
+                    {/* Observações / Anotações (Read-only for Student) */}
+                    {day.notes && (
+                      <div className="mt-4 pt-3 border-t border-slate-850/60 text-left">
+                        <div className="bg-slate-950/40 border border-slate-850/40 p-2.5 rounded-lg space-y-1">
+                          <div className="text-[9px] text-amber-400 font-extrabold uppercase tracking-wider">
+                            <span>📝 Observações da Coordenação</span>
                           </div>
+                          <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words">{day.notes}</p>
                         </div>
-                      ) : (
-                        <div 
-                          onClick={() => {
-                            setTempNotes(day.notes || "");
-                            setEditingNotesDay(day.dayNumber);
-                          }}
-                          className="group/notes cursor-pointer"
-                        >
-                          {day.notes ? (
-                            <div className="bg-slate-950/40 border border-slate-850/40 p-2.5 rounded-lg space-y-1 hover:border-slate-800 transition">
-                              <div className="flex items-center justify-between text-[9px] text-amber-400 font-extrabold uppercase tracking-wider">
-                                <span>📝 Observações do Dia</span>
-                                <span className="opacity-0 group-hover/notes:opacity-100 transition duration-200 text-[8px] text-slate-400">Clique para editar</span>
-                              </div>
-                              <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words">{day.notes}</p>
-                            </div>
-                          ) : (
-                            <div className="text-slate-500 hover:text-slate-400 hover:bg-slate-950/20 p-2 rounded-lg border border-dashed border-slate-850 hover:border-slate-800 transition duration-200 text-center text-[10px] font-bold flex items-center justify-center gap-1.5">
-                              <span>+ Adicionar anotação / observação</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -966,59 +831,17 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                           ))}
                         </div>
 
-                        {/* Observações / Anotações */}
-                        <div className="mt-4 pt-3 border-t border-emerald-500/10 text-left">
-                          {editingNotesDay === day.dayNumber ? (
-                            <div className="space-y-2">
-                              <textarea
-                                value={tempNotes}
-                                onChange={(e) => setTempNotes(e.target.value)}
-                                placeholder="Escreva suas observações, dúvidas ou resumo rápido deste dia..."
-                                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[11px] text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-400 font-sans"
-                                rows={3}
-                                autoFocus
-                              />
-                              <div className="flex justify-end gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => setEditingNotesDay(null)}
-                                  className="px-2.5 py-1 text-[10px] font-bold text-slate-400 hover:text-slate-200 bg-slate-850 rounded-md cursor-pointer transition"
-                                >
-                                  Cancelar
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleSaveNotes(day.dayNumber, tempNotes)}
-                                  className="px-2.5 py-1 text-[10px] font-black text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-md cursor-pointer transition flex items-center gap-1"
-                                >
-                                  Salvar
-                                </button>
+                        {/* Observações / Anotações (Read-only for Student) */}
+                        {day.notes && (
+                          <div className="mt-4 pt-3 border-t border-emerald-500/10 text-left">
+                            <div className="bg-slate-950/40 border border-emerald-500/10 p-2.5 rounded-lg space-y-1">
+                              <div className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider">
+                                <span>📝 Observações da Coordenação</span>
                               </div>
+                              <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words">{day.notes}</p>
                             </div>
-                          ) : (
-                            <div 
-                              onClick={() => {
-                                setTempNotes(day.notes || "");
-                                setEditingNotesDay(day.dayNumber);
-                              }}
-                              className="group/notes cursor-pointer"
-                            >
-                              {day.notes ? (
-                                <div className="bg-slate-950/40 border border-emerald-500/10 p-2.5 rounded-lg space-y-1 hover:border-emerald-500/20 transition">
-                                  <div className="flex items-center justify-between text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider">
-                                    <span>📝 Observações do Dia</span>
-                                    <span className="opacity-0 group-hover/notes:opacity-100 transition duration-200 text-[8px] text-slate-400">Clique para editar</span>
-                                  </div>
-                                  <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words">{day.notes}</p>
-                                </div>
-                              ) : (
-                                <div className="text-slate-500 hover:text-slate-400 hover:bg-slate-950/20 p-2 rounded-lg border border-dashed border-slate-850 hover:border-slate-800 transition duration-200 text-center text-[10px] font-bold flex items-center justify-center gap-1.5">
-                                  <span>+ Adicionar anotação / observação</span>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1060,6 +883,9 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
           </button>
         )}
       </div>
+
+      {/* Custom Revision Confirmation Modal */}
+
 
     </div>
   );
