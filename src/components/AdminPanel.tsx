@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { User, StudyCycle, WeeklyReport, PerformanceLog, PasswordResetRequest, SyllabusSection, SyllabusItem } from "../types";
+import { User, StudyCycle, WeeklyReport, PerformanceLog, PasswordResetRequest, SyllabusSection, SyllabusItem, EssaySubmission, EssayTheme } from "../types";
 import PerformanceStats from "./PerformanceStats";
 import ContentArea from "./ContentArea";
 import { 
@@ -8,6 +8,10 @@ import {
   BarChart2, 
   Mail, 
   Check, 
+  Database, 
+  Upload,
+  Download,
+  ExternalLink,
   X, 
   Shield, 
   BookOpen, 
@@ -43,10 +47,20 @@ import {
   savePasswordResetRequestToFirestore,
   adminUpdateUserPassword,
   fetchSyllabusProgressFromFirestore,
-  saveSyllabusProgressToFirestore
+  saveSyllabusProgressToFirestore,
+  saveUserToFirestore,
+  fetchPerformanceLogsFromFirestore,
+  savePerformanceLogToFirestore,
+  fetchAllEssaySubmissions,
+  saveEssaySubmissionToFirestore,
+  deleteEssaySubmissionFromFirestore,
+  saveEssayThemeToFirestore,
+  fetchEssayThemesFromFirestore,
+  deleteEssayThemeFromFirestore
 } from "../lib/firebase";
 import { sendGmailMessage } from "../lib/gmail";
 import { stripMarkdownAsterisks } from "../lib/textCleanup";
+import { callAIAction, callAICorrectEssay, callAIGenerateTheme } from "../utils/aiService";
 import { initialSyllabusData } from "../data/syllabusData";
 import { raioXCfoData, RaioXSubject, RaioXTopic } from "../data/raioxData";
 
@@ -77,8 +91,51 @@ interface AdminPanelProps {
 }
 
 export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDeleteUser, onAddUser }: AdminPanelProps) {
-  const [activeSubTab, setActiveSubTab] = useState<"users" | "cycle" | "stats" | "correio" | "content" | "syllabus_validation">("users");
+  const [activeSubTab, setActiveSubTab] = useState<"users" | "cycle" | "stats" | "correio" | "content" | "syllabus_validation" | "redacoes" | "themes" | "backup">("users");
   
+  // Validador category state (CFO vs Soldado)
+  const [valCategory, setValCategory] = useState<"cfo" | "soldado">("cfo");
+
+  // Essay Themes management states
+  const [essayThemes, setEssayThemes] = useState<EssayTheme[]>([]);
+  const [loadingThemes, setLoadingThemes] = useState<boolean>(false);
+  const [themeTitle, setThemeTitle] = useState<string>("");
+  const [themeMotivatingText, setThemeMotivatingText] = useState<string>("");
+  const [themeCategory, setThemeCategory] = useState<"soldado" | "cfo" | "geral">("geral");
+  const [isGeneratingTheme, setIsGeneratingTheme] = useState<boolean>(false);
+  const [isSavingTheme, setIsSavingTheme] = useState<boolean>(false);
+
+  // Student study cycles monitor state
+  const [studentCycles, setStudentCycles] = useState<Record<string, StudyCycle | null>>({});
+  const [loadingCycles, setLoadingCycles] = useState<boolean>(false);
+  const [cycleSearch, setCycleSearch] = useState<string>("");
+
+  // Backup and restore state
+  const [backupStatus, setBackupStatus] = useState<string | null>(null);
+  const [isRestoring, setIsRestoring] = useState<boolean>(false);
+  const [restoreProgress, setRestoreProgress] = useState<string>("");
+
+  // Student essay submissions management state
+  const [allEssaySubmissions, setAllEssaySubmissions] = useState<EssaySubmission[]>([]);
+  const [loadingEssays, setLoadingEssays] = useState<boolean>(false);
+  const [selectedEssay, setSelectedEssay] = useState<EssaySubmission | null>(null);
+  const [essayStatusFilter, setEssayStatusFilter] = useState<"all" | "pending" | "corrected">("all");
+  const [essaySearchQuery, setEssaySearchQuery] = useState<string>("");
+
+  // Essay grading form states
+  const [editThemeScore, setEditThemeScore] = useState<number>(0);
+  const [editCohesionScore, setEditCohesionScore] = useState<number>(0);
+  const [editArgumentScore, setEditArgumentScore] = useState<number>(0);
+  const [editGrammarScore, setEditGrammarScore] = useState<number>(0);
+  const [editThemeFeedback, setEditThemeFeedback] = useState<string>("");
+  const [editCohesionFeedback, setEditCohesionFeedback] = useState<string>("");
+  const [editArgumentFeedback, setEditArgumentFeedback] = useState<string>("");
+  const [editGrammarFeedback, setEditGrammarFeedback] = useState<string>("");
+  const [editOverallFeedback, setEditOverallFeedback] = useState<string>("");
+  const [editRewrittenText, setEditRewrittenText] = useState<string>("");
+  const [isSavingCorrection, setIsSavingCorrection] = useState<boolean>(false);
+  const [isAiRunningCopilot, setIsAiRunningCopilot] = useState<boolean>(false);
+
   // Student Private Notes states
   const [activeNotesStudentId, setActiveNotesStudentId] = useState<string | null>(null);
   const [currentNotesText, setCurrentNotesText] = useState<string>("");
@@ -356,7 +413,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     }
   }, [notification]);
 
-  // Load syllabus for validation when active tab or selected student changes
+  // Load syllabus for validation when active tab, selected student, or category changes
   useEffect(() => {
     if (activeSubTab !== "syllabus_validation") return;
 
@@ -365,12 +422,12 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       setValStatusMsg(null);
       try {
         if (valSelectedStudentId === "template") {
-          const savedTemplate = localStorage.getItem("syllabus_template_cfo");
+          const savedTemplate = localStorage.getItem("syllabus_template_" + valCategory);
           if (savedTemplate) {
             setValSyllabus(JSON.parse(savedTemplate));
           } else {
             const cleaned = initialSyllabusData.map(section => {
-              if (section.category === "cfo") {
+              if (section.category === valCategory) {
                 const filteredTopics = section.topics.filter(topic => {
                   const titleLower = topic.title.toLowerCase();
                   return !(
@@ -391,7 +448,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
           if (fetched && fetched.length > 0) {
             // Also clean on load to protect the user experience from old cached values
             const cleaned = fetched.map(section => {
-              if (section.category === "cfo") {
+              if (section.category === valCategory) {
                 const filteredTopics = section.topics.filter(topic => {
                   const titleLower = topic.title.toLowerCase();
                   return !(
@@ -409,7 +466,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
           } else {
             // Load clean default for the selected student
             const cleanedDefault = initialSyllabusData.map(section => {
-              if (section.category === "cfo") {
+              if (section.category === valCategory) {
                 const filteredTopics = section.topics.filter(topic => {
                   const titleLower = topic.title.toLowerCase();
                   return !(
@@ -424,7 +481,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
               return section;
             });
             setValSyllabus(cleanedDefault);
-            setValStatusMsg({ type: "error", text: "Nenhum progresso de edital encontrado no Firestore para este aluno. Carregando modelo padrão limpo." });
+            setValStatusMsg({ type: "error", text: `Nenhum progresso de edital encontrado no Firestore para este aluno. Carregando modelo padrão limpo do ${valCategory.toUpperCase()} PMBA.` });
           }
         }
       } catch (err) {
@@ -436,7 +493,195 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     };
 
     loadValidationSyllabus();
-  }, [valSelectedStudentId, activeSubTab]);
+  }, [valSelectedStudentId, activeSubTab, valCategory]);
+
+  // Load study cycles for approved students
+  useEffect(() => {
+    if (activeSubTab !== "cycle") return;
+    
+    const loadCycles = async () => {
+      setLoadingCycles(true);
+      const approvedStudents = allUsers.filter(u => u.isApproved && !u.isAdmin);
+      const cyclesMap: Record<string, StudyCycle | null> = {};
+      
+      try {
+        await Promise.all(
+          approvedStudents.map(async (student) => {
+            const cycle = await fetchStudyCycleFromFirestore(student.id);
+            cyclesMap[student.id] = cycle;
+          })
+        );
+        setStudentCycles(cyclesMap);
+      } catch (err) {
+        console.error("Erro ao carregar ciclos dos alunos:", err);
+      } finally {
+        setLoadingCycles(false);
+      }
+    };
+    
+    loadCycles();
+  }, [activeSubTab, allUsers]);
+
+  // Load essay submissions for all students
+  useEffect(() => {
+    if (activeSubTab !== "redacoes") return;
+    
+    const loadAllEssays = async () => {
+      setLoadingEssays(true);
+      try {
+        const essays = await fetchAllEssaySubmissions();
+        // Sort by newest first
+        essays.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setAllEssaySubmissions(essays);
+      } catch (err) {
+        console.error("Erro ao carregar redações dos alunos:", err);
+      } finally {
+        setLoadingEssays(false);
+      }
+    };
+    
+    loadAllEssays();
+  }, [activeSubTab]);
+
+  // Load all essay themes from database
+  useEffect(() => {
+    if (activeSubTab !== "themes" && activeSubTab !== "redacoes") return;
+    
+    const loadAllThemes = async () => {
+      setLoadingThemes(true);
+      try {
+        const themes = await fetchEssayThemesFromFirestore();
+        setEssayThemes(themes);
+      } catch (err) {
+        console.error("Erro ao carregar temas de redação:", err);
+      } finally {
+        setLoadingThemes(false);
+      }
+    };
+    
+    loadAllThemes();
+  }, [activeSubTab]);
+
+  // Save custom theme manually or after AI generation
+  const handleSaveTheme = async () => {
+    if (!themeTitle.trim()) {
+      alert("Por favor, digite ou gere um título para o tema.");
+      return;
+    }
+
+    setIsSavingTheme(true);
+    try {
+      const newTheme: EssayTheme = {
+        id: `theme_${Date.now()}`,
+        title: themeTitle.trim(),
+        motivatingText: themeMotivatingText.trim() || undefined,
+        category: themeCategory,
+        createdAt: new Date().toISOString()
+      };
+
+      await saveEssayThemeToFirestore(newTheme);
+      setEssayThemes((prev) => [newTheme, ...prev]);
+      setThemeTitle("");
+      setThemeMotivatingText("");
+      alert("Tema de redação salvo com sucesso!");
+    } catch (err: any) {
+      alert("Erro ao salvar tema: " + err.message);
+    } finally {
+      setIsSavingTheme(false);
+    }
+  };
+
+  // Delete theme from DB
+  const handleDeleteTheme = async (themeId: string) => {
+    if (!window.confirm("Deseja realmente deletar este tema de redação? Os alunos não poderão mais selecioná-lo.")) {
+      return;
+    }
+
+    try {
+      await deleteEssayThemeFromFirestore(themeId);
+      setEssayThemes((prev) => prev.filter(t => t.id !== themeId));
+    } catch (err: any) {
+      alert("Erro ao excluir tema: " + err.message);
+    }
+  };
+
+  // Trigger AI Theme Generator
+  const handleGenerateThemeWithAI = async () => {
+    setIsGeneratingTheme(true);
+    try {
+      const result = await callAIGenerateTheme({
+        category: themeCategory === "geral" ? undefined : (themeCategory as "soldado" | "cfo"),
+        keywords: themeTitle.trim() || undefined
+      });
+
+      setThemeTitle(result.title);
+      setThemeMotivatingText(result.motivatingText);
+    } catch (err: any) {
+      alert("Erro ao gerar tema com I.A.: " + err.message);
+    } finally {
+      setIsGeneratingTheme(false);
+    }
+  };
+
+  // Trigger AI Copilot Correction
+  const handleAICopilotCorrect = async () => {
+    if (!selectedEssay) return;
+    setIsAiRunningCopilot(true);
+    try {
+      const data = await callAICorrectEssay({
+        theme: selectedEssay.theme,
+        essayText: selectedEssay.essayText,
+        studentName: selectedEssay.studentName
+      });
+
+      // Update state fields so admin can tweak!
+      setEditThemeScore(data.themeAndStructureScore);
+      setEditCohesionScore(data.cohesionCoherenceScore);
+      setEditArgumentScore(data.informativeArgumentativeScore);
+      setEditGrammarScore(data.grammarFormalNormScore);
+      
+      setEditThemeFeedback(data.themeFeedback);
+      setEditCohesionFeedback(data.cohesionFeedback);
+      setEditArgumentFeedback(data.argumentationFeedback);
+      setEditGrammarFeedback(data.grammarFeedback);
+      
+      setEditOverallFeedback(`## Avaliação Corrigida via Copiloto I.A.\n\nSua nota sugerida foi **${data.overallScore}/100**.\n\n### Detalhamento:\n- **Tema:** ${data.themeAndStructureScore}/20\n- **Coesão:** ${data.cohesionCoherenceScore}/25\n- **Argumentação:** ${data.informativeArgumentativeScore}/25\n- **Gramática:** ${data.grammarFormalNormScore}/30`);
+      setEditRewrittenText(data.rewrittenText);
+
+      alert("Correção sugerida pela I.A. com sucesso! As notas e os feedbacks foram preenchidos de forma inteligente nos campos abaixo para sua revisão.");
+    } catch (err: any) {
+      alert("Erro ao executar corretor copiloto: " + err.message);
+    } finally {
+      setIsAiRunningCopilot(false);
+    }
+  };
+
+  // Sync grading form when selected essay changes
+  useEffect(() => {
+    if (selectedEssay) {
+      setEditThemeScore(selectedEssay.correctionDetails?.themeAndStructureScore ?? 0);
+      setEditCohesionScore(selectedEssay.correctionDetails?.cohesionCoherenceScore ?? 0);
+      setEditArgumentScore(selectedEssay.correctionDetails?.informativeArgumentativeScore ?? 0);
+      setEditGrammarScore(selectedEssay.correctionDetails?.grammarFormalNormScore ?? 0);
+      setEditThemeFeedback(selectedEssay.correctionDetails?.themeFeedback ?? "");
+      setEditCohesionFeedback(selectedEssay.correctionDetails?.cohesionFeedback ?? "");
+      setEditArgumentFeedback(selectedEssay.correctionDetails?.argumentationFeedback ?? "");
+      setEditGrammarFeedback(selectedEssay.correctionDetails?.grammarFeedback ?? "");
+      setEditOverallFeedback(selectedEssay.correctionFeedback ?? "");
+      setEditRewrittenText(selectedEssay.correctionDetails?.rewrittenText ?? "");
+    } else {
+      setEditThemeScore(0);
+      setEditCohesionScore(0);
+      setEditArgumentScore(0);
+      setEditGrammarScore(0);
+      setEditThemeFeedback("");
+      setEditCohesionFeedback("");
+      setEditArgumentFeedback("");
+      setEditGrammarFeedback("");
+      setEditOverallFeedback("");
+      setEditRewrittenText("");
+    }
+  }, [selectedEssay]);
 
   const handleValToggleValidated = (sectionId: string, topicId: string) => {
     const updated = valSyllabus.map(section => {
@@ -517,7 +762,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
 
   const handleValValidateAll = () => {
     const updated = valSyllabus.map(section => {
-      if (section.category === "cfo") {
+      if (section.category === valCategory) {
         const updatedTopics = section.topics.map(topic => ({
           ...topic,
           isValidated: true
@@ -535,8 +780,8 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     setValStatusMsg(null);
     try {
       if (valSelectedStudentId === "template") {
-        localStorage.setItem("syllabus_template_cfo", JSON.stringify(valSyllabus));
-        setValStatusMsg({ type: "success", text: "Modelo padrão do edital CFO PMBA atualizado com sucesso no navegador!" });
+        localStorage.setItem("syllabus_template_" + valCategory, JSON.stringify(valSyllabus));
+        setValStatusMsg({ type: "success", text: `Modelo padrão do edital ${valCategory.toUpperCase()} PMBA atualizado com sucesso no navegador!` });
       } else {
         await saveSyllabusProgressToFirestore(valSelectedStudentId, valSyllabus);
         if (valSelectedStudentId === currentUser.id) {
@@ -608,9 +853,9 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   };
 
   const handleValResetToDefault = () => {
-    if (window.confirm("Deseja realmente redefinir o edital para o padrão oficial do CFO PMBA (isso removerá tópicos customizados)?")) {
+    if (window.confirm(`Deseja realmente redefinir o edital para o padrão oficial do ${valCategory.toUpperCase()} PMBA (isso removerá tópicos customizados)?`)) {
       const cleaned = initialSyllabusData.map(section => {
-        if (section.category === "cfo") {
+        if (section.category === valCategory) {
           const filteredTopics = section.topics.filter(topic => {
             const titleLower = topic.title.toLowerCase();
             return !(
@@ -625,7 +870,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
         return section;
       });
       setValSyllabus(cleaned);
-      setValStatusMsg({ type: "success", text: "Edital redefinido para o padrão limpo do CFO PMBA!" });
+      setValStatusMsg({ type: "success", text: `Edital redefinido para o padrão limpo do ${valCategory.toUpperCase()} PMBA!` });
     }
   };
 
@@ -635,7 +880,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   // Scan for obsolete topics in the loaded rascunho
   const obsoleteTopicsList: { sectionId: string; subject: string; topic: SyllabusItem }[] = [];
   valSyllabus.forEach(section => {
-    if (section.category === "cfo") {
+    if (section.category === valCategory) {
       section.topics.forEach(topic => {
         const titleLower = topic.title.toLowerCase();
         if (
@@ -652,7 +897,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
 
   const handlePurgeAllObsolete = () => {
     const updated = valSyllabus.map(section => {
-      if (section.category === "cfo") {
+      if (section.category === valCategory) {
         const filteredTopics = section.topics.filter(topic => {
           const titleLower = topic.title.toLowerCase();
           return !(
@@ -1062,23 +1307,13 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
         logsSummary = "Nenhum histórico de questões respondidas encontrado para este aluno.";
       }
 
-      const response = await fetch("/api/ai/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "generate_report",
-          studentName: student.name,
-          week: reportWeek,
-          performanceData: logsSummary
-        })
+      const data = await callAIAction({
+        action: "generate_report",
+        studentName: student.name,
+        week: reportWeek,
+        performanceData: logsSummary
       });
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Erro desconhecido na resposta do servidor.");
-      }
-
-      const data = await response.json();
       if (data.text) {
         setReportContent(stripMarkdownAsterisks(data.text));
         setNotification({ type: "success", message: "Relatório pedagógico gerado com sucesso pela Inteligência Artificial!" });
@@ -1267,6 +1502,33 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
         >
           <Shield className="w-4 h-4" />
           Validador de Edital CFO
+        </button>
+        <button
+          onClick={() => setActiveSubTab("redacoes")}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition cursor-pointer ${
+            activeSubTab === "redacoes" ? "bg-amber-400 text-slate-950 font-bold" : "text-slate-400 hover:text-white"
+          }`}
+        >
+          <FileText className="w-4 h-4" />
+          Correções de Redações
+        </button>
+        <button
+          onClick={() => setActiveSubTab("themes")}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition cursor-pointer ${
+            activeSubTab === "themes" ? "bg-amber-400 text-slate-950 font-bold" : "text-slate-400 hover:text-white"
+          }`}
+        >
+          <BookOpen className="w-4 h-4" />
+          Temas de Redação
+        </button>
+        <button
+          onClick={() => setActiveSubTab("backup")}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg transition cursor-pointer ${
+            activeSubTab === "backup" ? "bg-amber-400 text-slate-950 font-bold" : "text-slate-400 hover:text-white"
+          }`}
+        >
+          <Database className="w-4 h-4" />
+          Backup & Restauro
         </button>
       </div>
 
@@ -2524,14 +2786,39 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                   </span>
                   <h3 className="text-lg font-black text-white uppercase tracking-wider">
                     {valSyllabusSubTab === "edital" 
-                      ? "Validador & Alinhamento de Edital CFO PMBA" 
-                      : "Alinhamento & Edição de Raio-X CFO PMBA"}
+                      ? `Validador & Alinhamento de Edital ${valCategory.toUpperCase()} PMBA` 
+                      : `Alinhamento & Edição de Raio-X ${valCategory.toUpperCase()} PMBA`}
                   </h3>
                   <p className="text-xs text-slate-400 mt-1">
                     {valSyllabusSubTab === "edital"
-                      ? "Gerencie, edite e valide os tópicos do edital verticalizado para garantir 100% de conformidade com o edital CFO PMBA."
-                      : "Gerencie as frequências de incidência e garanta que cada tema do Raio-X esteja corretamente mapeado ao Edital Verticalizado."}
+                      ? `Gerencie, edite e valide os tópicos do edital verticalizado para garantir 100% de conformidade com o edital ${valCategory.toUpperCase()} PMBA.`
+                      : `Gerencie as frequências de incidência e garanta que cada tema do Raio-X esteja corretamente mapeado ao Edital Verticalizado.`}
                   </p>
+
+                  <div className="flex items-center gap-1 mt-3 bg-slate-950 p-1 rounded-xl border border-slate-850 w-fit">
+                    <button
+                      onClick={() => {
+                        setValCategory("cfo");
+                        setValSelectedStudentId("template");
+                      }}
+                      className={`px-3 py-1.5 text-[10px] font-black uppercase rounded-lg transition cursor-pointer ${
+                        valCategory === "cfo" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      🎖️ CFO PMBA
+                    </button>
+                    <button
+                      onClick={() => {
+                        setValCategory("soldado");
+                        setValSelectedStudentId("template");
+                      }}
+                      className={`px-3 py-1.5 text-[10px] font-black uppercase rounded-lg transition cursor-pointer ${
+                        valCategory === "soldado" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      🛡️ Soldado PMBA
+                    </button>
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-2.5">
                   {valSyllabusSubTab === "edital" ? (
@@ -2647,7 +2934,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                     >
                       <option value="template">📝 Modelo Geral (Template para Novos Alunos)</option>
                       {approvedStudents
-                        .filter(u => u.accessCFO)
+                        .filter(student => valCategory === "cfo" ? student.accessCFO : !student.accessCFO)
                         .map(student => (
                           <option key={student.id} value={student.id}>
                             👤 Aluno: {student.name} ({student.email})
@@ -2667,7 +2954,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                       className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-200 px-3 py-2.5 rounded-xl focus:outline-none"
                     >
                       <option value="Todos">Todas as Matérias</option>
-                      {Array.from(new Set(valSyllabus.filter(s => s.category === "cfo").map(s => s.subject))).map(sub => (
+                      {Array.from(new Set(valSyllabus.filter(s => s.category === valCategory).map(s => s.subject))).map(sub => (
                         <option key={sub} value={sub}>{sub}</option>
                       ))}
                     </select>
@@ -2696,7 +2983,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                       <div>
                         <h4 className="text-xs font-black text-rose-400 uppercase tracking-wider">Tópicos Fora do Edital Detectados!</h4>
                         <p className="text-xs text-slate-300 mt-1">
-                          Encontramos {obsoleteTopicsList.length} assunto(s) que não constam no edital oficial CFO PMBA (ex: <strong>Lei de Acesso à Informação</strong>).
+                          Encontramos {obsoleteTopicsList.length} assunto(s) que não constam no edital oficial {valCategory.toUpperCase()} PMBA (ex: <strong>Lei de Acesso à Informação</strong>).
                         </p>
                         <div className="flex flex-wrap gap-1.5 mt-2">
                           {obsoleteTopicsList.map((item, idx) => (
@@ -2725,7 +3012,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                 ) : (
                   <div className="grid grid-cols-1 gap-6">
                     {valSyllabus
-                      .filter(section => section.category === "cfo")
+                      .filter(section => section.category === valCategory)
                       .filter(section => valSubjectFilter === "Todos" || section.subject === valSubjectFilter)
                       .map(section => {
                         const filteredTopics = section.topics.filter(topic => 
@@ -3015,6 +3302,873 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
           </div>
         );
       })()}
+
+      {/* --- SUBTAB 7: REDAÇÕES SUBMISSIONS & GRADING --- */}
+      {activeSubTab === "redacoes" && (() => {
+        const filteredEssays = allEssaySubmissions.filter(essay => {
+          const studentNameMatches = essay.studentName?.toLowerCase().includes(essaySearchQuery.toLowerCase());
+          const studentEmailMatches = essay.studentEmail?.toLowerCase().includes(essaySearchQuery.toLowerCase());
+          const themeMatches = essay.theme?.toLowerCase().includes(essaySearchQuery.toLowerCase());
+          const matchesSearch = studentNameMatches || studentEmailMatches || themeMatches;
+          
+          if (essayStatusFilter === "all") return matchesSearch;
+          return essay.status === essayStatusFilter && matchesSearch;
+        });
+
+        return (
+          <div className="space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div>
+                <h3 className="font-bold text-base text-white uppercase tracking-wider flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-amber-400" />
+                  Painel de Correção & Gestão de Redações
+                </h3>
+                <p className="text-slate-400 text-xs mt-1">
+                  Acompanhe as redações enviadas pelos alunos, revise as notas da inteligência artificial e lance notas finais oficiais.
+                </p>
+              </div>
+              <div className="text-xs bg-slate-800 text-slate-300 px-3.5 py-1.5 rounded-lg font-mono flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                Total Recebido: {allEssaySubmissions.length} redações
+              </div>
+            </div>
+
+            {/* Search and filter controls */}
+            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Buscar Aluno ou Tema</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Nome do aluno, e-mail, assunto..."
+                  value={essaySearchQuery}
+                  onChange={(e) => setEssaySearchQuery(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-amber-400 rounded-xl px-3 py-2.5 text-xs text-slate-200 focus:outline-none placeholder:text-slate-700 font-medium"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Filtrar Status</label>
+                <div className="flex gap-2">
+                  {(["all", "pending", "corrected"] as const).map((status) => (
+                    <button
+                      key={status}
+                      onClick={() => setEssayStatusFilter(status)}
+                      className={`flex-1 py-2.5 text-xs font-bold uppercase rounded-xl border transition cursor-pointer ${
+                        essayStatusFilter === status
+                          ? "bg-amber-400 text-slate-950 border-amber-400 font-black"
+                          : "bg-slate-900 text-slate-400 border-slate-800 hover:text-white"
+                      }`}
+                    >
+                      {status === "all" ? "Todas" : status === "pending" ? "Pendentes" : "Corrigidas"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {loadingEssays ? (
+              <div className="text-center py-12 flex flex-col items-center justify-center space-y-3">
+                <RefreshCw className="w-8 h-8 text-amber-500 animate-spin" />
+                <span className="text-xs text-slate-500 font-mono">Carregando redações do Firestore...</span>
+              </div>
+            ) : filteredEssays.length === 0 ? (
+              <div className="text-center py-12 bg-slate-950 rounded-2xl border border-slate-850">
+                <FileText className="w-10 h-10 text-slate-700 mx-auto mb-2" />
+                <p className="text-xs text-slate-400 italic">Nenhuma redação encontrada com os filtros selecionados.</p>
+              </div>
+            ) : (
+              <div className="bg-slate-950 border border-slate-850 rounded-2xl overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-900 text-slate-400 font-bold uppercase tracking-wider text-[10px] border-b border-slate-850">
+                        <th className="py-3 px-4">Alunoc</th>
+                        <th className="py-3 px-4">Tema da Redação</th>
+                        <th className="py-3 px-4">Tipo</th>
+                        <th className="py-3 px-4">Data Envio</th>
+                        <th className="py-3 px-4 text-center">Status</th>
+                        <th className="py-3 px-4 text-center">Nota</th>
+                        <th className="py-3 px-4 text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-850/40">
+                      {filteredEssays.map((essay) => (
+                        <tr key={essay.id} className="hover:bg-slate-900/40 transition">
+                          <td className="py-3.5 px-4">
+                            <span className="font-extrabold text-white block">{essay.studentName}</span>
+                            <span className="text-[10px] text-slate-500 block font-mono">{essay.studentEmail}</span>
+                          </td>
+                          <td className="py-3.5 px-4 font-medium text-slate-200 max-w-xs truncate" title={essay.theme}>
+                            {essay.theme}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${
+                              essay.submissionType === "typed" 
+                                ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" 
+                                : "bg-purple-500/10 text-purple-400 border border-purple-500/20"
+                            }`}>
+                              {essay.submissionType === "typed" ? "Digitada" : "Imagem"}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-400 text-[11px]">
+                            {new Date(essay.createdAt).toLocaleString("pt-BR")}
+                          </td>
+                          <td className="py-3.5 px-4 text-center">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                              essay.status === "corrected"
+                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                : "bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse"
+                            }`}>
+                              {essay.status === "corrected" ? "Corrigida" : "Pendente"}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-center font-black text-sm">
+                            {essay.status === "corrected" ? (
+                              <span className="text-emerald-400">{essay.score ?? essay.correctionDetails?.overallScore ?? "-"}</span>
+                            ) : (
+                              <span className="text-slate-600">-</span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => setSelectedEssay(essay)}
+                                className="px-2.5 py-1 bg-amber-400 hover:bg-amber-500 text-slate-950 font-black rounded text-[10px] uppercase transition cursor-pointer"
+                              >
+                                {essay.status === "corrected" ? "Ver/Editar" : "Corrigir"}
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  if (window.confirm("Deseja realmente deletar permanentemente esta submissão de redação?")) {
+                                    try {
+                                      await deleteEssaySubmissionFromFirestore(essay.id);
+                                      setAllEssaySubmissions(prev => prev.filter(e => e.id !== essay.id));
+                                      setNotification({ type: "success", message: "Redação excluída com sucesso!" });
+                                    } catch (err) {
+                                      console.error("Erro ao deletar redação:", err);
+                                      setNotification({ type: "error", message: "Erro ao deletar redação do servidor." });
+                                    }
+                                  }
+                                }}
+                                className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                                title="Excluir Redação"
+                              >
+                                <Trash className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Essay grading modal */}
+            {selectedEssay && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md overflow-y-auto">
+                <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-5xl w-full max-h-[90vh] flex flex-col overflow-hidden text-white shadow-2xl animate-fade-in my-8">
+                  {/* Modal Header */}
+                  <div className="p-6 border-b border-slate-800 flex items-start justify-between bg-slate-950/20">
+                    <div>
+                      <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest block mb-1">Avaliação e Homologação de Redação</span>
+                      <h3 className="text-base font-black text-white uppercase tracking-wider">
+                        Folha de Correção do Candidato
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Candidato: <strong className="text-amber-400 font-bold">{selectedEssay.studentName}</strong> ({selectedEssay.studentEmail})
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setSelectedEssay(null)}
+                      className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800/60 transition cursor-pointer"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  {/* Modal Body */}
+                  <div className="p-6 overflow-y-auto grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 min-h-0">
+                    {/* Left Column: Essay Content */}
+                    <div className="lg:col-span-5 space-y-4 flex flex-col min-h-0">
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
+                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-wider block mb-1">Tema Proposto</span>
+                        <h4 className="text-xs font-bold text-slate-200 leading-relaxed">{selectedEssay.theme}</h4>
+                      </div>
+
+                      <div className="flex-1 min-h-[250px] flex flex-col bg-slate-950 rounded-xl border border-slate-850 overflow-hidden">
+                        <div className="bg-slate-900/60 px-4 py-2 border-b border-slate-850 flex justify-between items-center">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Conteúdo da Redação</span>
+                          {selectedEssay.imageUrl && (
+                            <a
+                              href={selectedEssay.imageUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[9px] font-black text-amber-400 hover:underline uppercase flex items-center gap-1"
+                            >
+                              Ver Foto Original <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                        <div className="p-4 overflow-y-auto flex-1 font-serif text-sm leading-relaxed text-slate-300 bg-amber-400/[0.02] whitespace-pre-wrap select-text">
+                          {selectedEssay.essayText || "Nenhum texto digitado foi fornecido."}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Column: Interactive Grading Form */}
+                    <div className="lg:col-span-7 space-y-4 overflow-y-auto pr-1">
+                      {/* AI Copilot Assisting Section */}
+                      <div className="bg-amber-400/5 border border-amber-400/10 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-fade-in">
+                        <div className="space-y-1">
+                          <h5 className="text-[11px] font-black text-amber-400 uppercase tracking-wider flex items-center gap-1">
+                            <Sparkles className="w-3.5 h-3.5" />
+                            Corretor Copiloto I.A.
+                          </h5>
+                          <p className="text-[10px] text-slate-400 leading-relaxed">
+                            Deixe a Inteligência Artificial ler este texto e preencher automaticamente as notas sugeridas, feedbacks de cada critério e a versão modelo de redação nota 100. Você poderá revisar e ajustar tudo antes de salvar!
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAICopilotCorrect}
+                          disabled={isAiRunningCopilot}
+                          className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-extrabold text-[10px] uppercase flex items-center gap-1.5 cursor-pointer shrink-0 transition"
+                        >
+                          {isAiRunningCopilot ? (
+                            <>
+                              <RefreshCw className="w-3 h-3 animate-spin text-slate-950" />
+                              <span>Processando...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3 h-3 text-slate-950" />
+                              <span>Sugerir Notas</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      <div className="bg-slate-950 p-5 rounded-2xl border border-slate-850 space-y-4">
+                        <div className="flex justify-between items-center border-b border-slate-850 pb-3">
+                          <h4 className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-1.5">
+                            <Sparkles className="w-4 h-4 text-amber-400" />
+                            Critérios de Avaliação (Padrão PMBA)
+                          </h4>
+                          <div className="text-right">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase block">Pontuação Final</span>
+                            <span className="text-xl font-black text-amber-400">
+                              {editThemeScore + editCohesionScore + editArgumentScore + editGrammarScore} <span className="text-slate-600 text-xs">/ 100</span>
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Theme and Structure (Max 20) */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-xs">
+                            <span className="font-bold text-slate-200">1. Tema e Estrutura Textual (Introdução, Desenv. e Conclusão)</span>
+                            <span className="font-mono text-amber-400 font-extrabold">{editThemeScore} / 20</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="20"
+                            step="1"
+                            value={editThemeScore}
+                            onChange={(e) => setEditThemeScore(parseInt(e.target.value))}
+                            className="w-full accent-amber-400 bg-slate-800 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <textarea
+                            rows={2}
+                            placeholder="Feedback específico para Tema e Estrutura..."
+                            value={editThemeFeedback}
+                            onChange={(e) => setEditThemeFeedback(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-850 rounded-xl px-3 py-1.5 text-xs text-slate-300 focus:outline-none placeholder:text-slate-700 font-medium"
+                          />
+                        </div>
+
+                        {/* Cohesion and Coherence (Max 25) */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-xs">
+                            <span className="font-bold text-slate-200">2. Coesão e Coerência (Mecanismos de ligação e clareza)</span>
+                            <span className="font-mono text-amber-400 font-extrabold">{editCohesionScore} / 25</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="25"
+                            step="1"
+                            value={editCohesionScore}
+                            onChange={(e) => setEditCohesionScore(parseInt(e.target.value))}
+                            className="w-full accent-amber-400 bg-slate-800 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <textarea
+                            rows={2}
+                            placeholder="Feedback específico para Coesão e Coerência..."
+                            value={editCohesionFeedback}
+                            onChange={(e) => setEditCohesionFeedback(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-850 rounded-xl px-3 py-1.5 text-xs text-slate-300 focus:outline-none placeholder:text-slate-700 font-medium"
+                          />
+                        </div>
+
+                        {/* Informative and Argumentative (Max 25) */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-xs">
+                            <span className="font-bold text-slate-200">3. Informatividade e Argumentação (Poder de persuasão e repertório)</span>
+                            <span className="font-mono text-amber-400 font-extrabold">{editArgumentScore} / 25</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="25"
+                            step="1"
+                            value={editArgumentScore}
+                            onChange={(e) => setEditArgumentScore(parseInt(e.target.value))}
+                            className="w-full accent-amber-400 bg-slate-800 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <textarea
+                            rows={2}
+                            placeholder="Feedback específico para Informatividade e Argumentação..."
+                            value={editArgumentFeedback}
+                            onChange={(e) => setEditArgumentFeedback(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-850 rounded-xl px-3 py-1.5 text-xs text-slate-300 focus:outline-none placeholder:text-slate-700 font-medium"
+                          />
+                        </div>
+
+                        {/* Grammar / Formal Norm (Max 30) */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-xs">
+                            <span className="font-bold text-slate-200">4. Gramática e Norma Culta (Regência, concordância, crase, ortografia)</span>
+                            <span className="font-mono text-amber-400 font-extrabold">{editGrammarScore} / 30</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="30"
+                            step="1"
+                            value={editGrammarScore}
+                            onChange={(e) => setEditGrammarScore(parseInt(e.target.value))}
+                            className="w-full accent-amber-400 bg-slate-800 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <textarea
+                            rows={2}
+                            placeholder="Feedback específico para Gramática e Norma Culta..."
+                            value={editGrammarFeedback}
+                            onChange={(e) => setEditGrammarFeedback(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-850 rounded-xl px-3 py-1.5 text-xs text-slate-300 focus:outline-none placeholder:text-slate-700 font-medium"
+                          />
+                        </div>
+
+                        {/* Suggested rewritten or corrections box */}
+                        <div className="space-y-1.5 pt-2 border-t border-slate-850">
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider">Trecho Corrigido / Sugestões de Escrita</label>
+                          <textarea
+                            rows={3}
+                            placeholder="Escreva sugestões de reescrita para parágrafos problemáticos da redação..."
+                            value={editRewrittenText}
+                            onChange={(e) => setEditRewrittenText(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-850 rounded-xl px-3 py-2 text-xs text-slate-300 focus:outline-none placeholder:text-slate-700 font-medium"
+                          />
+                        </div>
+
+                        {/* Overall feedback summary */}
+                        <div className="space-y-1.5">
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider">Parecer Geral do Coordenador</label>
+                          <textarea
+                            rows={4}
+                            placeholder="Escreva um parecer geral motivador com dicas essenciais para o avanço do aluno..."
+                            value={editOverallFeedback}
+                            onChange={(e) => setEditOverallFeedback(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-850 rounded-xl px-3 py-2 text-xs text-slate-300 focus:outline-none placeholder:text-slate-700 font-medium"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Modal Footer */}
+                  <div className="p-4 border-t border-slate-800 bg-slate-950/40 flex justify-between items-center">
+                    <span className="text-[9px] text-slate-500 font-mono">Homologação Oficial Tenente PMBA</span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setSelectedEssay(null)}
+                        className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-300 text-xs font-bold rounded-xl cursor-pointer transition"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        onClick={async () => {
+                          setIsSavingCorrection(true);
+                          const totalScore = editThemeScore + editCohesionScore + editArgumentScore + editGrammarScore;
+                          
+                          const updatedEssay: EssaySubmission = {
+                            ...selectedEssay,
+                            status: "corrected",
+                            score: totalScore,
+                            correctionFeedback: editOverallFeedback || "Parabéns pelo envio de sua redação! Continue praticando constante para o edital PMBA.",
+                            correctionDetails: {
+                              themeAndStructureScore: editThemeScore,
+                              cohesionCoherenceScore: editCohesionScore,
+                              informativeArgumentativeScore: editArgumentScore,
+                              grammarFormalNormScore: editGrammarScore,
+                              overallScore: totalScore,
+                              themeFeedback: editThemeFeedback || "Bom domínio estrutural.",
+                              cohesionFeedback: editCohesionFeedback || "Coesão textual adequada.",
+                              argumentationFeedback: editArgumentFeedback || "Excelente repertório argumentativo.",
+                              grammarFeedback: editGrammarFeedback || "Atenção a pequenas desviações gramaticais de pontuação.",
+                              rewrittenText: editRewrittenText || "Excelente rascunho de desenvolvimento."
+                            }
+                          };
+
+                          try {
+                            await saveEssaySubmissionToFirestore(updatedEssay);
+                            
+                            // Update local list
+                            setAllEssaySubmissions(prev => 
+                              prev.map(e => e.id === selectedEssay.id ? updatedEssay : e)
+                            );
+                            
+                            setNotification({ type: "success", message: `Redação de ${selectedEssay.studentName} corrigida com sucesso! Nota final: ${totalScore}` });
+                            setSelectedEssay(null);
+                          } catch (err) {
+                            console.error("Erro ao salvar redação corrigida:", err);
+                            setNotification({ type: "error", message: "Erro ao salvar a correção no servidor." });
+                          } finally {
+                            setIsSavingCorrection(false);
+                          }
+                        }}
+                        disabled={isSavingCorrection}
+                        className="px-5 py-2 bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black rounded-xl cursor-pointer transition flex items-center gap-1.5 shadow"
+                      >
+                        {isSavingCorrection ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Salvando...</span>
+                          </>
+                        ) : (
+                          <span>Salvar & Publicar Correção</span>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* --- SUBTAB: THEMES MANAGEMENT & AI GENERATOR --- */}
+      {activeSubTab === "themes" && (
+        <div className="space-y-6 animate-fade-in">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-850 pb-5">
+            <div>
+              <h3 className="font-black text-base text-white uppercase tracking-wider flex items-center gap-2">
+                <BookOpen className="w-5 h-5 text-amber-400" />
+                Gerenciador de Temas de Redação
+              </h3>
+              <p className="text-slate-400 text-xs mt-1">
+                Cadastre novos temas de redação manualmente ou utilize a Inteligência Artificial para gerar propostas completas de redação contendo textos motivadores de apoio no padrão oficial da PMBA.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Left Column: Form to create / generate theme */}
+            <div className="lg:col-span-5 bg-slate-950 p-6 rounded-3xl border border-slate-850 space-y-4">
+              <h4 className="text-xs font-black text-white uppercase tracking-widest flex items-center gap-2 border-b border-slate-900 pb-3">
+                <Plus className="w-4 h-4 text-amber-400" />
+                Criar / Gerar Novo Tema
+              </h4>
+
+              <div className="space-y-3.5">
+                {/* Category Selector */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-400 text-[10px] uppercase font-bold block">Destinação / Cargo</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(["geral", "soldado", "cfo"] as const).map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setThemeCategory(cat)}
+                        className={`py-2 rounded-xl text-xs font-bold border cursor-pointer transition uppercase tracking-wider ${
+                          themeCategory === cat
+                            ? "bg-amber-400/10 border-amber-400 text-amber-400 font-extrabold shadow"
+                            : "bg-slate-900 border-slate-850 text-slate-500 hover:bg-slate-850"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Title Input */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-400 text-[10px] uppercase font-bold block">Título do Tema</label>
+                  <input
+                    type="text"
+                    value={themeTitle}
+                    onChange={(e) => setThemeTitle(e.target.value)}
+                    placeholder="Ex: Os desafios da atuação integrada das polícias no Nordeste..."
+                    className="w-full bg-slate-900 border border-slate-850 text-slate-200 text-xs px-4 py-3 rounded-xl focus:outline-none focus:border-amber-400/50"
+                  />
+                  <span className="text-[9px] text-slate-500 block leading-tight font-mono">
+                    *Se for gerar com I.A., você pode digitar algumas palavras-chave acima como semente de inspiração.
+                  </span>
+                </div>
+
+                {/* Motivating Text (supporting texts) */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-400 text-[10px] uppercase font-bold block">Texto Motivador (Opcional - Suporta Markdown)</label>
+                  <textarea
+                    value={themeMotivatingText}
+                    onChange={(e) => setThemeMotivatingText(e.target.value)}
+                    placeholder="Cole ou redija o texto motivador que apoiará a escrita do aluno (notícias, estatísticas, leis)..."
+                    rows={8}
+                    className="w-full bg-slate-900 border border-slate-850 text-slate-200 text-xs font-serif p-4 rounded-xl focus:outline-none focus:border-amber-400/50 leading-relaxed resize-none"
+                  />
+                </div>
+
+                {/* Action Buttons */}
+                <div className="grid grid-cols-2 gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleGenerateThemeWithAI}
+                    disabled={isGeneratingTheme}
+                    className="py-3 px-3 rounded-xl bg-slate-900 border border-amber-400/30 text-amber-400 hover:bg-slate-850 text-xs font-extrabold flex items-center justify-center gap-1.5 transition uppercase tracking-wider cursor-pointer"
+                  >
+                    {isGeneratingTheme ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Gerando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Gerar com I.A.</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSaveTheme}
+                    disabled={isSavingTheme}
+                    className="py-3 px-3 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center justify-center gap-1.5 transition uppercase tracking-wider cursor-pointer"
+                  >
+                    {isSavingTheme ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-slate-950" />
+                        <span>Salvando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-slate-950" />
+                        <span>Salvar Tema</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Right Column: Existing Themes List */}
+            <div className="lg:col-span-7 bg-slate-950 p-6 rounded-3xl border border-slate-850 space-y-4">
+              <h4 className="text-xs font-black text-white uppercase tracking-widest flex items-center gap-2 border-b border-slate-900 pb-3">
+                <BookOpen className="w-4 h-4 text-slate-400" />
+                Biblioteca de Temas Cadastrados ({essayThemes.length})
+              </h4>
+
+              {loadingThemes ? (
+                <div className="flex flex-col items-center justify-center py-20 space-y-2">
+                  <RefreshCw className="w-8 h-8 text-amber-400 animate-spin" />
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Carregando temas do banco...</span>
+                </div>
+              ) : essayThemes.length === 0 ? (
+                <div className="text-center py-16 px-4 bg-slate-900 border border-slate-850 rounded-2xl">
+                  <BookOpen className="w-10 h-10 text-slate-700 mx-auto mb-2" />
+                  <span className="text-xs font-bold text-slate-400 block uppercase">Nenhum Tema Customizado</span>
+                  <p className="text-[10px] text-slate-500 max-w-xs mx-auto mt-1 leading-normal">
+                    Adicione ou gere temas de redação na coluna ao lado para disponibilizar aos seus candidatos. Caso nenhum tema customizado seja salvo, o sistema utilizará a biblioteca de presets integrada por padrão.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
+                  {essayThemes.map((theme) => (
+                    <div
+                      key={theme.id}
+                      className="bg-slate-900 border border-slate-850/60 p-4 rounded-2xl flex items-start justify-between gap-4 hover:border-slate-800 transition relative overflow-hidden"
+                    >
+                      <div className="space-y-1.5 flex-1 pr-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-400/10 text-amber-400 border border-amber-400/20 font-mono">
+                            {theme.category || "geral"}
+                          </span>
+                          <span className="text-[9px] text-slate-500 font-mono">
+                            {new Date(theme.createdAt).toLocaleDateString("pt-BR")}
+                          </span>
+                        </div>
+                        <h5 className="text-xs font-bold text-slate-200 leading-normal">{theme.title}</h5>
+                        {theme.motivatingText && (
+                          <div className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed bg-slate-950 p-2.5 rounded-lg border border-slate-900 font-sans whitespace-pre-wrap">
+                            <strong>Texto Motivador:</strong> {theme.motivatingText}
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() => handleDeleteTheme(theme.id)}
+                        className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                        title="Deletar Tema"
+                      >
+                        <Trash className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- SUBTAB 8: BACKUP & RESTORE --- */}
+      {activeSubTab === "backup" && (
+        <div className="space-y-6">
+          <div>
+            <h3 className="font-bold text-base text-white uppercase tracking-wider flex items-center gap-2">
+              <Database className="w-5 h-5 text-amber-400" />
+              Backup & Restauração do Sistema
+            </h3>
+            <p className="text-slate-400 text-xs mt-1">
+              Exporte todos os cadastros, ciclos de estudo, logs de desempenho e redações para um arquivo JSON local, ou restaure dados a partir de um backup anterior.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Card Export */}
+            <div className="bg-slate-950 p-6 rounded-2xl border border-slate-850 space-y-4 flex flex-col justify-between animate-fade-in">
+              <div className="space-y-2">
+                <div className="p-2.5 bg-amber-400/10 text-amber-400 rounded-xl w-fit border border-amber-400/20">
+                  <Download className="w-5 h-5" />
+                </div>
+                <h4 className="text-sm font-black text-white uppercase tracking-wider">Exportar Banco de Dados</h4>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Gere uma cópia completa de segurança em arquivo JSON contendo todos os dados do ecossistema de estudos (Usuários, Relatórios, Desempenho e Ciclos). Recomendado realizar periodicamente.
+                </p>
+              </div>
+
+              <div className="pt-4 border-t border-slate-900">
+                <button
+                  onClick={async () => {
+                    setBackupStatus("Preparando exportação de segurança...");
+                    try {
+                      // Fetch full backups
+                      const reports = await fetchAllReportsFromFirestore();
+                      const essays = await fetchAllEssaySubmissions();
+                      
+                      const cyclesMap: Record<string, StudyCycle | null> = {};
+                      const perfLogsMap: Record<string, PerformanceLog[]> = {};
+                      
+                      const approvedStudents = allUsers.filter(u => u.isApproved && !u.isAdmin);
+                      
+                      setBackupStatus("Buscando ciclos e logs de desempenho...");
+                      await Promise.all(
+                        approvedStudents.map(async (student) => {
+                          const cycle = await fetchStudyCycleFromFirestore(student.id);
+                          if (cycle) cyclesMap[student.id] = cycle;
+                          
+                          const logs = await fetchPerformanceLogsFromFirestore(student.id);
+                          if (logs && logs.length > 0) perfLogsMap[student.id] = logs;
+                        })
+                      );
+
+                      const fullBackupPayload = {
+                        version: "1.0",
+                        exportDate: new Date().toISOString(),
+                        appName: "Tenente PMBA Coaching",
+                        data: {
+                          users: allUsers,
+                          weeklyReports: reports,
+                          essaySubmissions: essays,
+                          studyCycles: cyclesMap,
+                          performanceLogs: perfLogsMap
+                        }
+                      };
+
+                      setBackupStatus("Gerando arquivo JSON...");
+                      const jsonString = JSON.stringify(fullBackupPayload, null, 2);
+                      const blob = new Blob([jsonString], { type: "application/json" });
+                      const url = URL.createObjectURL(blob);
+                      
+                      const link = document.createElement("a");
+                      const safeDate = new Date().toLocaleDateString("sv-SE");
+                      link.href = url;
+                      link.download = `backup_coaching_pmba_${safeDate}.json`;
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                      
+                      setBackupStatus(null);
+                      setNotification({ type: "success", message: "Backup exportado com sucesso para download!" });
+                    } catch (err) {
+                      console.error("Erro ao gerar backup:", err);
+                      setBackupStatus(null);
+                      setNotification({ type: "error", message: "Erro ao gerar ou exportar backup de dados." });
+                    }
+                  }}
+                  className="w-full py-3 bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black uppercase rounded-xl cursor-pointer transition flex items-center justify-center gap-2 shadow"
+                >
+                  <Download className="w-4 h-4" />
+                  {backupStatus ? backupStatus : "Fazer Backup Completo (JSON)"}
+                </button>
+              </div>
+            </div>
+
+            {/* Card Import */}
+            <div className="bg-slate-950 p-6 rounded-2xl border border-slate-850 space-y-4 flex flex-col justify-between animate-fade-in">
+              <div className="space-y-2">
+                <div className="p-2.5 bg-cyan-500/10 text-cyan-400 rounded-xl w-fit border border-cyan-500/20">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <h4 className="text-sm font-black text-white uppercase tracking-wider">Importar & Restaurar Dados</h4>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Faça upload de um arquivo JSON de backup gerado anteriormente para restaurar ou sincronizar o banco de dados. <strong>Atenção:</strong> Isso pode sobrescrever ou mesclar registros existentes!
+                </p>
+              </div>
+
+              <div className="pt-4 border-t border-slate-900 space-y-3">
+                <div className="relative border border-dashed border-slate-800 rounded-xl p-4 text-center hover:border-cyan-500 transition">
+                  <input
+                    type="file"
+                    accept=".json"
+                    disabled={isRestoring}
+                    onChange={(e) => {
+                      if (isRestoring) return;
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+
+                      const reader = new FileReader();
+                      reader.onload = async (evt) => {
+                        try {
+                          const parsed = JSON.parse(evt.target?.result as string);
+                          if (!parsed.version || !parsed.data) {
+                            alert("Erro: Formato de backup inválido. Chaves fundamentais ausentes.");
+                            return;
+                          }
+
+                          const { users, weeklyReports, essaySubmissions, studyCycles, performanceLogs } = parsed.data;
+                          
+                          const confirmRestore = window.confirm(
+                            `Backup carregado com sucesso!\n` +
+                            `Data da exportação: ${new Date(parsed.exportDate).toLocaleString()}\n\n` +
+                            `Encontrado no arquivo:\n` +
+                            `- Usuários: ${users?.length ?? 0}\n` +
+                            `- Redações: ${essaySubmissions?.length ?? 0}\n` +
+                            `- Relatórios: ${weeklyReports?.length ?? 0}\n\n` +
+                            `Deseja realmente iniciar a restauração desses dados na nuvem? Isso poderá mesclar ou atualizar dados existentes.`
+                          );
+
+                          if (!confirmRestore) return;
+
+                          setIsRestoring(true);
+                          setRestoreProgress("Iniciando restauração de segurança...");
+
+                          // Restore users
+                          if (users && users.length > 0) {
+                            for (let i = 0; i < users.length; i++) {
+                              const u = users[i];
+                              setRestoreProgress(`Restaurando usuários (${i + 1}/${users.length})...`);
+                              await saveUserToFirestore(u);
+                            }
+                          }
+
+                          // Restore weekly reports
+                          if (weeklyReports && weeklyReports.length > 0) {
+                            for (let i = 0; i < weeklyReports.length; i++) {
+                              const r = weeklyReports[i];
+                              setRestoreProgress(`Restaurando relatórios semanais (${i + 1}/${weeklyReports.length})...`);
+                              await saveReportToFirestore(r);
+                            }
+                          }
+
+                          // Restore essay submissions
+                          if (essaySubmissions && essaySubmissions.length > 0) {
+                            for (let i = 0; i < essaySubmissions.length; i++) {
+                              const es = essaySubmissions[i];
+                              setRestoreProgress(`Restaurando redações (${i + 1}/${essaySubmissions.length})...`);
+                              await saveEssaySubmissionToFirestore(es);
+                            }
+                          }
+
+                          // Restore study cycles
+                          if (studyCycles) {
+                            const cycleEntries = Object.entries(studyCycles);
+                            for (let i = 0; i < cycleEntries.length; i++) {
+                              const [studentId, cycle] = cycleEntries[i];
+                              if (cycle) {
+                                setRestoreProgress(`Restaurando ciclos de estudo (${i + 1}/${cycleEntries.length})...`);
+                                await saveStudyCycleToFirestore(studentId, cycle as StudyCycle);
+                              }
+                            }
+                          }
+
+                          // Restore performance logs
+                          if (performanceLogs) {
+                            const logEntries = Object.entries(performanceLogs);
+                            for (let i = 0; i < logEntries.length; i++) {
+                              const [studentId, logs] = logEntries[i];
+                              if (logs && Array.isArray(logs)) {
+                                for (let j = 0; j < logs.length; j++) {
+                                  setRestoreProgress(`Restaurando logs de desempenho (${i + 1}/${logEntries.length})...`);
+                                  await savePerformanceLogToFirestore(studentId, logs[j]);
+                                }
+                              }
+                            }
+                          }
+
+                          setIsRestoring(false);
+                          setRestoreProgress("");
+                          setNotification({ type: "success", message: "Banco de dados restaurado com sucesso a partir do backup de segurança!" });
+                          
+                          // Refresh current window to load fresh data
+                          setTimeout(() => window.location.reload(), 1500);
+
+                        } catch (err) {
+                          console.error("Erro na leitura do backup:", err);
+                          setIsRestoring(false);
+                          setRestoreProgress("");
+                          alert("Erro fatal ao analisar arquivo de backup JSON.");
+                        }
+                      };
+                      reader.readAsText(file);
+                    }}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                  />
+                  <div className="flex flex-col items-center justify-center space-y-1.5 py-1">
+                    <Upload className="w-6 h-6 text-slate-500" />
+                    <span className="text-xs text-slate-300 font-bold block">
+                      {isRestoring ? "Processando Restauro..." : "Clique ou arraste o arquivo .json de backup"}
+                    </span>
+                    <span className="text-[10px] text-slate-500 font-mono block">Apenas arquivos .json válidos</span>
+                  </div>
+                </div>
+
+                {isRestoring && (
+                  <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl text-xs space-y-2 animate-fade-in">
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+                      <span className="font-extrabold text-cyan-400 uppercase tracking-wider text-[10px]">Progresso da Importação:</span>
+                    </div>
+                    <p className="text-[11px] text-slate-300 font-medium leading-relaxed">{restoreProgress}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Student Private Notes Modal */}
       {activeNotesStudentId && (

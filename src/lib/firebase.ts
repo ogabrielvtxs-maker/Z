@@ -22,7 +22,7 @@ import {
   createUserWithEmailAndPassword,
   updatePassword
 } from "firebase/auth";
-import { User, StudyCycle, WeeklyReport, ContentItem, SyllabusSection, PerformanceLog, CoordQuestion, PasswordResetRequest } from "../types";
+import { User, StudyCycle, WeeklyReport, ContentItem, SyllabusSection, PerformanceLog, CoordQuestion, PasswordResetRequest, EssaySubmission, EssayTheme } from "../types";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDGQm2JPIEU4UkfkxKrF5dqPESKtp10XxQ",
@@ -854,4 +854,116 @@ export async function migrateStudentData(oldId: string, newId: string, updatedPr
     console.error("Error migrating local storage data:", err);
   }
 }
+
+// --- ESSAY SYSTEM (REDAÇÃO) ---
+
+export async function saveEssaySubmissionToFirestore(submission: EssaySubmission): Promise<void> {
+  const path = `essay_submissions/${submission.id}`;
+  try {
+    const cleaned = cleanUndefined(submission);
+    await setDoc(doc(db, "essay_submissions", submission.id), cleaned);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+    console.error(`Error saving essay submission ${submission.id}:`, error);
+  }
+}
+
+export async function fetchEssaySubmissionsForStudent(studentId: string): Promise<EssaySubmission[]> {
+  const path = "essay_submissions";
+  try {
+    const querySnapshot = await getDocs(collection(db, path));
+    const submissions: EssaySubmission[] = [];
+    querySnapshot.forEach((docSnap) => {
+      const data = docSnap.data() as EssaySubmission;
+      if (data.studentId === studentId) {
+        submissions.push(data);
+      }
+    });
+    return submissions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+    console.error(`Error fetching essay submissions for student ${studentId}:`, error);
+    return [];
+  }
+}
+
+export async function fetchAllEssaySubmissions(): Promise<EssaySubmission[]> {
+  const path = "essay_submissions";
+  try {
+    const querySnapshot = await getDocs(collection(db, path));
+    const submissions: EssaySubmission[] = [];
+    querySnapshot.forEach((docSnap) => {
+      submissions.push(docSnap.data() as EssaySubmission);
+    });
+    return submissions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+    console.error("Error fetching all essay submissions:", error);
+    return [];
+  }
+}
+
+export async function deleteEssaySubmissionFromFirestore(submissionId: string): Promise<void> {
+  const path = `essay_submissions/${submissionId}`;
+  try {
+    await deleteDoc(doc(db, "essay_submissions", submissionId));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+    console.error(`Error deleting essay submission ${submissionId}:`, error);
+  }
+}
+
+// --- ESSAY THEMES (TEMAS DE REDAÇÃO) ---
+
+export async function saveEssayThemeToFirestore(theme: EssayTheme): Promise<void> {
+  const path = `essay_themes/${theme.id}`;
+  try {
+    const cleaned = cleanUndefined(theme);
+    await setDoc(doc(db, "essay_themes", theme.id), cleaned);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+    console.error(`Error saving essay theme ${theme.id}:`, error);
+  }
+}
+
+export async function fetchEssayThemesFromFirestore(): Promise<EssayTheme[]> {
+  const path = "essay_themes";
+  try {
+    const querySnapshot = await getDocs(collection(db, path));
+    const themes: EssayTheme[] = [];
+    querySnapshot.forEach((docSnap) => {
+      themes.push(docSnap.data() as EssayTheme);
+    });
+    return themes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+    console.error("Error fetching essay themes:", error);
+    return [];
+  }
+}
+
+export async function deleteEssayThemeFromFirestore(themeId: string): Promise<void> {
+  const path = `essay_themes/${themeId}`;
+  try {
+    await deleteDoc(doc(db, "essay_themes", themeId));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+    console.error(`Error deleting essay theme ${themeId}:`, error);
+  }
+}
+
 

@@ -933,6 +933,13 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
                     <option key={r} value={r}>{r}</option>
                   ))}
                 </select>
+
+                <div className="mt-2 p-3 rounded-xl bg-amber-400/10 border border-amber-400/20 text-slate-200 text-xs leading-relaxed space-y-1">
+                  <span className="font-extrabold text-amber-400 block uppercase tracking-wider text-[10px] flex items-center gap-1">
+                    ⚠️ Instrução de Estudo para Erros:
+                  </span>
+                  <p>Atenção Recruta! Ao identificar o motivo do erro, você deve obrigatoriamente <strong>anotar este erro em seu Caderno de Erros</strong> e <strong>resolver novas questões de fixação</strong> para dominar o assunto!</p>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -979,7 +986,7 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl">
             <h3 className="font-bold text-sm text-slate-200 flex items-center gap-2 mb-4 uppercase tracking-wider">
               <BarChart2 className="w-5 h-5 text-amber-400" />
-              Mapeamento de Erros
+              Anotar Erros & Resolver Questões
             </h3>
 
             {logs.length === 0 ? (
@@ -1082,7 +1089,7 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
                       <th className="py-2.5 font-semibold">Motivo do Erro</th>
                       <th className="py-2.5 font-semibold text-center">Acertos</th>
                       <th className="py-2.5 font-semibold text-center">Desempenho</th>
-                      {!isViewingAsAdmin && <th className="py-2.5 font-semibold text-center">Ações</th>}
+                      <th className="py-2.5 font-semibold text-center">Ações</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/40">
@@ -1117,17 +1124,15 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
                               {pct}%
                             </span>
                           </td>
-                          {!isViewingAsAdmin && (
-                            <td className="py-3 text-center">
-                              <button
-                                onClick={() => handleDeleteLog(log.id)}
-                                className="p-1 rounded hover:bg-red-500/10 text-slate-400 hover:text-red-400 transition cursor-pointer"
-                                title="Excluir"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          )}
+                          <td className="py-3 text-center">
+                            <button
+                              onClick={() => handleDeleteLog(log.id)}
+                              className="p-1 rounded hover:bg-red-500/10 text-slate-400 hover:text-red-400 transition cursor-pointer"
+                              title="Excluir"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
                         </tr>
                       );
                     })}

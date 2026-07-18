@@ -62,46 +62,60 @@ export default function Pomodoro({
 
   // Handle countdown
   useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    
     if (isPlaying) {
-      timerRef.current = setInterval(() => {
+      interval = setInterval(() => {
         setTimeLeft((prev) => {
           if (prev <= 1) {
+            // Session complete!
             playBeep();
             setIsPlaying(false);
+            
             if (isFocusMode) {
               setSessionCount((c) => c + 1);
               setIsFocusMode(false);
-              registerStudyDay(currentUser.id);
-              window.dispatchEvent(new Event("streak_updated"));
+              if (currentUser?.id) {
+                registerStudyDay(currentUser.id);
+                window.dispatchEvent(new Event("streak_updated"));
+              }
               return breakTime * 60;
             } else {
               setIsFocusMode(true);
               return focusTime * 60;
             }
           }
-
-          // If in focus mode, increment studied seconds for the daily goal in real-time
-          if (isFocusMode) {
-            const todayStr = new Date().toLocaleDateString("sv-SE");
-            const storageKey = `pomodoro_study_seconds_${currentUser.id}_${todayStr}`;
-            const currentSeconds = parseInt(localStorage.getItem(storageKey) || "0") + 1;
-            localStorage.setItem(storageKey, currentSeconds.toString());
-            
-            // Dispatch storage event so other components (like WeeklyCycle) update immediately
-            window.dispatchEvent(new Event("storage"));
-          }
-
           return prev - 1;
         });
       }, 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
     }
-
+    
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (interval) clearInterval(interval);
     };
   }, [isPlaying, isFocusMode, focusTime, breakTime, currentUser]);
+
+  // Real-time study progress increment - handle once per second if playing & in focus mode
+  useEffect(() => {
+    let progressInterval: NodeJS.Timeout | null = null;
+    
+    if (isPlaying && isFocusMode && currentUser?.id) {
+      progressInterval = setInterval(() => {
+        const todayStr = new Date().toLocaleDateString("sv-SE");
+        const storageKey = `pomodoro_study_seconds_${currentUser.id}_${todayStr}`;
+        const currentSeconds = parseInt(localStorage.getItem(storageKey) || "0") + 1;
+        localStorage.setItem(storageKey, currentSeconds.toString());
+        setStudiedSecondsToday(currentSeconds);
+        
+        // Dispatch storage event so other components (like WeeklyCycle) update immediately
+        window.dispatchEvent(new Event("storage"));
+      }, 1000);
+    }
+    
+    return () => {
+      if (progressInterval) clearInterval(progressInterval);
+    };
+  }, [isPlaying, isFocusMode, currentUser]);
 
   const togglePlay = () => {
     setIsPlaying(!isPlaying);

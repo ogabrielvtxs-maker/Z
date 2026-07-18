@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { saveContentItemToFirestore } from "../lib/firebase";
 import { cleanAiOutputText } from "../lib/textCleanup";
+import { callAIAction, callAIOcr } from "../utils/aiService";
 
 interface TenenteIAModalProps {
   isOpen: boolean;
@@ -96,23 +97,15 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
     }, 4500);
 
     try {
-      const res = await fetch("/api/ai/action", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          action,
-          topic: topicTitle,
-          subject: subjectTitle,
-          contextText: contextText.trim() || undefined
-        })
+      const data = await callAIAction({
+        action,
+        topic: topicTitle,
+        subject: subjectTitle,
+        contextText: contextText.trim() || undefined
       });
-
-      const data = await res.json();
       clearInterval(interval);
 
-      if (res.ok && data.text) {
+      if (data.text) {
         setResponseText(data.text);
         if (action === "flashcards") {
           const cards: { front: string; back: string }[] = [];
@@ -144,11 +137,11 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
           setFlashcardViewMode("interactive");
         }
       } else {
-        setErrorMsg(data.error || "Ocorreu um erro inesperado ao se conectar com o Tenente IA.");
+        setErrorMsg("Ocorreu um erro inesperado ao se conectar com o Tenente IA.");
       }
     } catch (err: any) {
       clearInterval(interval);
-      setErrorMsg("Não foi possível conectar ao servidor da Inteligência Artificial. Verifique sua conexão e tente novamente.");
+      setErrorMsg(err.message || "Não foi possível conectar ao servidor da Inteligência Artificial. Verifique sua conexão e tente novamente.");
     } finally {
       setLoading(false);
     }
@@ -206,30 +199,23 @@ export default function TenenteIAModal({ isOpen, onClose, topicTitle, subjectTit
     reader.onloadend = async () => {
       const base64String = reader.result as string;
       try {
-        const response = await fetch("/api/ai/ocr", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            image: base64String,
-            mimeType: file.type
-          })
+        const data = await callAIOcr({
+          image: base64String,
+          mimeType: file.type
         });
 
-        const data = await response.json();
-        if (response.ok && data.text) {
+        if (data.text) {
           setContextText((prev) => {
             const added = data.text;
             return prev ? `${prev}\n\n[Texto Escaneado por OCR]:\n${added}` : added;
           });
           alert("OCR Concluído! O texto da imagem foi extraído e anexado abaixo com sucesso.");
         } else {
-          alert(data.error || "Erro ao processar imagem para extração de texto.");
+          alert("Erro ao processar imagem para extração de texto.");
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error(err);
-        alert("Erro de conexão ao enviar imagem para análise de OCR.");
+        alert(err.message || "Erro de conexão ao enviar imagem para análise de OCR.");
       } finally {
         setOcrLoading(false);
       }

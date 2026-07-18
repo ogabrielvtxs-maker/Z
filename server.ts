@@ -133,6 +133,79 @@ async function startServer() {
     }
   });
 
+  // API Route: AI Essay Correction
+  app.post("/api/ai/correct-essay", async (req, res) => {
+    const { theme, essayText, studentName } = req.body;
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ 
+        error: "A chave de API do Gemini (GEMINI_API_KEY) não está configurada no servidor. Por favor, configure-a no painel de Configurações > Secrets." 
+      });
+    }
+
+    if (!theme || !essayText) {
+      return res.status(400).json({ error: "O tema e o texto da redação são obrigatórios." });
+    }
+
+    try {
+      const ai = new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
+      const prompt = `Você é o "Tenente Corretor", um oficial experiente e rigoroso da Polícia Militar da Bahia (PMBA) e especialista na correção de redações para o concurso de Soldado e Oficial (CFO) da PMBA, seguindo os critérios de avaliação da banca examinadora (como a IBFC).
+Seu objetivo é corrigir a redação do aluno ${studentName || "Recruta"} com base no Tema proposto de forma realista, técnica e didática.
+
+Tema da Redação: "${theme}"
+Texto da Redação:
+"${essayText}"
+
+Você DEVE avaliar a redação de forma realista e pedagógica (instruindo o aluno de forma disciplinada, mas encorajadora), pontuando de 0 a 100 pontos no total, divididos em 4 critérios formais da PMBA:
+1. Tema e Texto Dissertativo-Argumentativo (Até 20 pontos): Avalie a adequação ao tema proposto, clareza e estrutura dissertativa com introdução, desenvolvimento e conclusão.
+2. Coesão e Coerência (Até 25 pontos): Avalie a conexão entre as orações e parágrafos, uso adequado de conectivos de transição, coerência lógica das ideias.
+3. Informatividade e Argumentação (Até 25 pontos): Avalie a consistência e profundidade dos argumentos, presença de repertório sociocultural legítimo e produtividade.
+4. Norma Culta / Gramática (Até 30 pontos): Avalie desvios gramaticais (ortografia, concordância, regência, crase, pontuação, acentuação, translineação).
+
+A pontuação total (overallScore) DEVE ser exatamente a soma dos quatro critérios acima.
+
+Responda UNICAMENTE com um objeto JSON estruturado contendo exatamente as seguintes propriedades, sem tags de markdown extras fora da estrutura do JSON (retorne o JSON puro):
+{
+  "themeAndStructureScore": number (entre 0 e 20),
+  "cohesionCoherenceScore": number (entre 0 e 25),
+  "informativeArgumentativeScore": number (entre 0 e 25),
+  "grammarFormalNormScore": number (entre 0 e 30),
+  "overallScore": number (soma exata dos quatro anteriores, entre 0 e 100),
+  "themeFeedback": "feedback detalhado e didático em formato markdown sobre tema e estrutura dissertativa",
+  "cohesionFeedback": "feedback detalhado em formato markdown sobre coesão, coerência e conectivos",
+  "argumentationFeedback": "feedback detalhado em formato markdown sobre repertório sociocultural, profundidade e argumentação",
+  "grammarFeedback": "lista organizada de desvios gramaticais específicos encontrados no texto e como corrigi-los, em formato markdown",
+  "rewrittenText": "versão perfeita e polida da redação reescrita por você, mantendo a essência do aluno mas corrigindo tudo, servindo de modelo exemplar de nota 100 para o aluno estudar"
+}`;
+
+      const response = await generateContentWithRetry(ai, {
+        model: "gemini-3.5-flash",
+        contents: prompt,
+        config: {
+          temperature: 0.2,
+          responseMimeType: "application/json",
+        }
+      });
+
+      // Parse and return JSON
+      const parsed = JSON.parse(response.text.trim());
+      res.json(parsed);
+    } catch (err: any) {
+      console.error("Erro na correção da redação pelo Gemini:", err);
+      res.status(500).json({ 
+        error: "Falha ao realizar a correção da redação via Inteligência Artificial: " + (err.message || "Erro de Conexão") 
+      });
+    }
+  });
+
   // API Route: AI Action
   app.post("/api/ai/action", async (req, res) => {
     const { action, topic, subject, contextText, studentName, week, performanceData, difficulty, year, banca } = req.body;
@@ -281,6 +354,67 @@ async function startServer() {
       console.error("Erro no processamento da IA:", err);
       res.status(500).json({ 
         error: "Falha ao consultar a Inteligência Artificial do Mentor de Estudos IA: " + (err.message || "Erro de Conexão") 
+      });
+    }
+  });
+
+  // API Route: AI Generate Theme
+  app.post("/api/ai/generate-theme", async (req, res) => {
+    const { category, keywords } = req.body;
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ 
+        error: "A chave de API do Gemini (GEMINI_API_KEY) não está configurada no servidor. Por favor, configure-a no painel de Configurações > Secrets da plataforma AI Studio." 
+      });
+    }
+
+    try {
+      const ai = new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
+      const prompt = `Você é um professor e examinador especialista em redações para concursos públicos da PMBA (Polícia Militar da Bahia - Soldado e CFO).
+Seu objetivo é gerar um novo e inédito tema de redação dissertativo-argumentativo, no padrão de cobrança das bancas examinadoras como a IBFC.
+
+${category ? `O tema deve ser focado no nível de exigência do cargo de: ${category.toUpperCase()} da PMBA.\n` : ""}
+${keywords ? `Tente incorporar ou se inspirar nas seguintes palavras-chave ou assunto sugerido pelo administrador: "${keywords}"\n` : ""}
+
+Gere um tema relevante para a área policial, segurança pública, cidadania, ética ou direitos humanos no Brasil (com foco especial em temas pertinentes ao estado da Bahia, se aplicável).
+
+Você DEVE estruturar o resultado contendo:
+1. O título exato do tema (ex: "A atuação preventiva das polícias e a redução da criminalidade urbana").
+2. Um "Texto Motivador" rico, completo e informativo (geralmente contendo 2 a 3 parágrafos simulando dados estatísticos, notícias, artigos de lei ou trechos doutrinários de suporte) para orientar a escrita do aluno.
+
+Responda UNICAMENTE com um objeto JSON estruturado contendo exatamente as seguintes propriedades, sem tags de markdown extras fora da estrutura do JSON (retorne o JSON puro):
+{
+  "title": "Título exato e impactante do tema de redação",
+  "motivatingText": "Texto motivador completo formatado em Markdown com múltiplos parágrafos, contendo notícias, dados estatísticos simulados de órgãos oficiais e questionamentos pertinentes ao tema."
+}`;
+
+      const response = await generateContentWithRetry(ai, {
+        model: "gemini-3.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: "Você é o Tenente Gerador de Temas, examinador de concursos públicos PMBA. Escreva em português brasileiro correto de forma limpa.",
+          temperature: 0.7,
+          responseMimeType: "application/json",
+        }
+      });
+
+      if (!response.text) {
+        throw new Error("A IA não retornou o tema gerado.");
+      }
+
+      res.json(JSON.parse(response.text.trim()));
+    } catch (err: any) {
+      console.error("Erro ao gerar tema pelo Gemini:", err);
+      res.status(500).json({ 
+        error: "Falha ao gerar o tema de redação via Inteligência Artificial: " + (err.message || "Erro de Conexão") 
       });
     }
   });

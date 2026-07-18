@@ -118,3 +118,38 @@ export interface PasswordResetRequest {
   createdAt: string;
 }
 
+export interface EssaySubmission {
+  id: string;
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  theme: string;
+  submissionType: "typed" | "image";
+  essayText: string;
+  imageUrl?: string;
+  createdAt: string;
+  status: "pending" | "corrected";
+  score?: number;
+  correctionFeedback?: string;
+  correctionDetails?: {
+    themeAndStructureScore: number; // Max 20
+    cohesionCoherenceScore: number; // Max 25
+    informativeArgumentativeScore: number; // Max 25
+    grammarFormalNormScore: number; // Max 30
+    overallScore: number; // Max 100
+    themeFeedback: string;
+    cohesionFeedback: string;
+    argumentationFeedback: string;
+    grammarFeedback: string;
+    rewrittenText: string;
+  };
+}
+
+export interface EssayTheme {
+  id: string;
+  title: string;
+  motivatingText?: string;
+  category?: "soldado" | "cfo" | "geral";
+  createdAt: string;
+}
+

@@ -40,18 +40,22 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
       (d) => d.dayNumber >= startDayNum && d.dayNumber <= endDayNum
     );
 
-    return prevWeekDays.length > 0 && prevWeekDays.every((d) => d.completed);
+    return prevWeekDays.length > 0 && prevWeekDays.every((d) => !!d.completed);
   };
 
   // Automatically select the active week (the first week with an incomplete day)
   useEffect(() => {
     if (cycle && cycle.days && cycle.days.length > 0) {
-      const firstIncompleteDay = cycle.days.find((d) => !d.completed);
-      if (firstIncompleteDay) {
-        const activeWeek = Math.floor((firstIncompleteDay.dayNumber - 1) / 7) + 1;
-        setSelectedWeek(activeWeek);
+      if (cycle.days.length <= 7) {
+        setSelectedWeek(cycle.weekNumber || 1);
       } else {
-        setSelectedWeek(Math.ceil(cycle.days.length / 7));
+        const firstIncompleteDay = cycle.days.find((d) => !d.completed);
+        if (firstIncompleteDay) {
+          const activeWeek = Math.floor((firstIncompleteDay.dayNumber - 1) / 7) + 1;
+          setSelectedWeek(activeWeek);
+        } else {
+          setSelectedWeek(Math.ceil(cycle.days.length / 7));
+        }
       }
     }
   }, [cycle]);
@@ -272,13 +276,14 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
     const incompleteDays = cycle.days.filter((d) => !d.completed);
     if (incompleteDays.length > 0) {
       alert(
-        `Atenção Recruta! Você precisa concluir as metas de todos os 7 dias antes de destravar a continuidade do ciclo.\n\nFaltam ${incompleteDays.length} dia(s) com pendências.`
+        `Atenção Recruta! Você precisa concluir as metas de todos os dias do ciclo atual antes de destravar a continuidade.\n\nFaltam ${incompleteDays.length} dia(s) com pendências.`
       );
       return;
     }
 
-    // Create Week + 1 Cycle
-    const nextWeekNumber = cycle.weekNumber + 1;
+    // Create Week + N Cycle
+    const nextWeekOffset = cycle.days.length <= 7 ? 1 : Math.ceil(cycle.days.length / 7);
+    const nextWeekNumber = cycle.weekNumber + nextWeekOffset;
     const nextWeekCycle: StudyCycle = {
       id: `cycle_w${nextWeekNumber}_${currentUser.id}`,
       studentId: currentUser.id,
@@ -369,8 +374,9 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
   const globalProgressPercent = cycle && cycle.days.length > 0 ? Math.round((completedDaysCount / cycle.days.length) * 100) : 0;
 
   // Filter days for the selected week
-  const startDayNum = (selectedWeek - 1) * 7 + 1;
-  const endDayNum = selectedWeek * 7;
+  const isShortCycle = cycle && cycle.days.length <= 7;
+  const startDayNum = isShortCycle ? 1 : (selectedWeek - 1) * 7 + 1;
+  const endDayNum = isShortCycle ? 7 : selectedWeek * 7;
   const weekDays = cycle
     ? cycle.days.filter((d) => d.dayNumber >= startDayNum && d.dayNumber <= endDayNum)
     : [];
@@ -464,7 +470,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
             <div>
               <div className="flex items-center gap-2 text-amber-400 font-bold text-lg">
                 <Calendar className="w-5 h-5 text-amber-500" />
-                <span>Ciclo Semanal - Semana {selectedWeek}</span>
+                <span>Ciclo Semanal - Semana {isShortCycle ? cycle.weekNumber : selectedWeek}</span>
               </div>
               <p className="text-slate-400 text-xs mt-1">
                 Bata 100% das suas metas diárias de questões e teorias para liberar a continuidade do ciclo.
@@ -478,26 +484,14 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                 <span className="text-xl font-bold font-mono text-amber-400">{globalProgressPercent}% Concluído</span>
               </div>
 
-              {cycle.days.length <= 7 ? (
-                cycle.isCompleted ? (
-                  <button
-                    onClick={handleUnlockNextWeek}
-                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-extrabold text-xs flex items-center gap-2 cursor-pointer shadow-md hover:brightness-110 uppercase tracking-wider"
-                  >
-                    <Unlock className="w-4 h-4 text-slate-950 animate-bounce" />
-                    <span>Destravar Semana {cycle.weekNumber + 1}</span>
-                  </button>
-                ) : (
-                  <div className="px-5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-500 text-xs font-semibold flex items-center gap-2">
-                    <Lock className="w-4 h-4 text-slate-600" />
-                    <span>Semana {cycle.weekNumber + 1} Bloqueada</span>
-                  </div>
-                )
-              ) : completedDaysCount === cycle.days.length ? (
-                <div className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black text-xs flex items-center gap-2 shadow-md">
-                  <Award className="w-4 h-4 text-slate-950 animate-bounce" />
-                  <span>Ciclo 100% Concluído!</span>
-                </div>
+              {cycle.isCompleted ? (
+                <button
+                  onClick={handleUnlockNextWeek}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-extrabold text-xs flex items-center gap-2 cursor-pointer shadow-md hover:brightness-110 uppercase tracking-wider animate-bounce"
+                >
+                  <Unlock className="w-4 h-4 text-slate-950" />
+                  <span>Destravar Próxima Semana</span>
+                </button>
               ) : isSelectedWeekCompleted ? (
                 <div className="px-5 py-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 font-bold text-xs flex items-center gap-2 shadow-md">
                   <Award className="w-4 h-4 text-emerald-400 animate-bounce" />

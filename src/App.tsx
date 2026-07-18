@@ -7,6 +7,7 @@ import WeeklyCycle from "./components/WeeklyCycle";
 import Pomodoro from "./components/Pomodoro";
 import PerformanceStats from "./components/PerformanceStats";
 import VerticalSyllabus from "./components/VerticalSyllabus";
+import RedacaoCorrector from "./components/RedacaoCorrector";
 import ContentArea from "./components/ContentArea";
 import CoordinatorQuestions from "./components/CoordinatorQuestions";
 import { stripMarkdownAsterisks } from "./lib/textCleanup";
@@ -41,7 +42,8 @@ import {
   History,
   Lock,
   AlertTriangle,
-  CheckCircle2
+  CheckCircle2,
+  FileText
 } from "lucide-react";
 
 const INITIAL_USERS: User[] = [
@@ -1069,6 +1071,18 @@ export default function App() {
                   </button>
 
                   <button
+                    onClick={() => setActiveTab("redacao")}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      activeTab === "redacao" 
+                        ? "bg-slate-900 border-l-4 border-amber-400 text-amber-400" 
+                        : "text-slate-400 hover:bg-slate-950 hover:text-white"
+                    }`}
+                  >
+                    <FileText className="w-4 h-4 shrink-0" />
+                    <span>Redação Corretor I.A.</span>
+                  </button>
+
+                  <button
                     onClick={() => setActiveTab("inbox")}
                     className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
                       activeTab === "inbox" 
@@ -1227,6 +1241,15 @@ export default function App() {
                   Edital Vertical
                 </button>
                 <button
+                  onClick={() => { setActiveTab("redacao"); setMobileMenuOpen(false); }}
+                  className={`p-3 text-center rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 transition ${
+                    activeTab === "redacao" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
+                  }`}
+                >
+                  <FileText className="w-4 h-4" />
+                  Redação I.A.
+                </button>
+                <button
                   onClick={() => { setActiveTab("content"); setMobileMenuOpen(false); }}
                   className={`p-3 text-center rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 transition ${
                     activeTab === "content" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400"
@@ -1342,6 +1365,10 @@ export default function App() {
 
           {activeTab === "syllabus" && !currentUser.isAdmin && (
             <VerticalSyllabus currentUser={currentUser} />
+          )}
+
+          {activeTab === "redacao" && !currentUser.isAdmin && (
+            <RedacaoCorrector currentUser={currentUser} />
           )}
 
           {activeTab === "content" && (

@@ -6,6 +6,7 @@ import {
   deleteCoordQuestionFromFirestore,
   savePerformanceLogToFirestore
 } from "../lib/firebase";
+import { callAIAction } from "../utils/aiService";
 import { 
   HelpCircle, 
   Plus, 
@@ -186,25 +187,15 @@ export default function CoordinatorQuestions({ currentUser }: CoordinatorQuestio
 
     setAiGenerating(true);
     try {
-      const response = await fetch("/api/ai/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "generate_question",
-          subject: subject,
-          topic: topic,
-          difficulty: difficulty,
-          year: year,
-          banca: banca
-        })
+      const data = await callAIAction({
+        action: "generate_question",
+        subject: subject,
+        topic: topic,
+        difficulty: difficulty,
+        year: year,
+        banca: banca
       });
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Erro de rede.");
-      }
-
-      const data = await response.json();
       if (!data.text) {
         throw new Error("A IA não retornou conteúdo.");
       }
