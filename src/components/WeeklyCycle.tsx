@@ -228,7 +228,8 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
 
     // Recalculate day completed status
     const allSubjectsCompleted = day.subjects.every((s) => s.completed);
-    day.completed = allSubjectsCompleted;
+    const questionsCompleted = true; // Retired daily questions solved tracking from completion logic
+    day.completed = allSubjectsCompleted && questionsCompleted;
 
     updatedDays[dayIndex] = day;
 
@@ -766,6 +767,8 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                       )}
                     </div>
 
+
+
                     {/* Observações / Anotações (Read-only for Student) */}
                     {day.notes && (
                       <div className="mt-4 pt-3 border-t border-slate-850/60 text-left">
@@ -824,6 +827,8 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                             </button>
                           ))}
                         </div>
+
+
 
                         {/* Observações / Anotações (Read-only for Student) */}
                         {day.notes && (

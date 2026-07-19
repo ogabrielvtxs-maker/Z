@@ -134,12 +134,28 @@
         "createdAt": { "type": "string" }
       },
       "required": ["id", "email", "name", "status", "createdAt"]
+    },
+    "StudyModule": {
+      "title": "StudyModule",
+      "description": "Learning module for course library",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "createdAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "Active users registered on the platform"
+    },
+    "/modules/{moduleId}": {
+      "schema": "StudyModule",
+      "description": "Admin created learning modules"
     },
     "/study_cycles/{studentId}": {
       "schema": "StudyCycle",

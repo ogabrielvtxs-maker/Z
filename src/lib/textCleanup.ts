@@ -55,3 +55,36 @@ export function stripMarkdownAsterisks(text: string): string {
 
   return cleaned;
 }
+
+/**
+ * Strict preprocessing function to remove any '*' character from Gemini responses.
+ */
+export function strictPreprocessGeminiText(text: string): string {
+  if (!text) return "";
+  // Strictly remove all '*' characters
+  return text.replace(/\*/g, "");
+}
+
+/**
+ * Recursively removes all '*' characters from any string fields in an object or array.
+ */
+export function preprocessGeminiResponse<T>(data: T): T {
+  if (data === null || data === undefined) return data;
+  if (typeof data === "string") {
+    return strictPreprocessGeminiText(data) as unknown as T;
+  }
+  if (Array.isArray(data)) {
+    return data.map(item => preprocessGeminiResponse(item)) as unknown as T;
+  }
+  if (typeof data === "object") {
+    const cleanedObj: any = {};
+    for (const key in data) {
+      if (Object.prototype.hasOwnProperty.call(data, key)) {
+        cleanedObj[key] = preprocessGeminiResponse(data[key]);
+      }
+    }
+    return cleanedObj as T;
+  }
+  return data;
+}
+

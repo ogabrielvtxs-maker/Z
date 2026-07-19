@@ -1,4 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
+import { preprocessGeminiResponse } from "../lib/textCleanup";
+
 
 // Reusable local helper to detect if a response is an HTML page (meaning a catch-all SPA redirect)
 async function isHtmlResponse(response: Response): Promise<boolean> {
@@ -11,10 +13,13 @@ async function isHtmlResponse(response: Response): Promise<boolean> {
 
 // Client-side initialization of the GoogleGenAI SDK
 function getClientSideAI(): GoogleGenAI {
-  const apiKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
+  let apiKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    apiKey = localStorage.getItem("VITE_GEMINI_API_KEY");
+  }
   if (!apiKey) {
     throw new Error(
-      "A inteligência artificial não pôde ser ativada. O aplicativo está rodando em um servidor de arquivos estáticos (Netlify) e a variável 'VITE_GEMINI_API_KEY' não foi configurada nas variáveis de ambiente do Netlify."
+      "A inteligência artificial não pôde ser ativada. A variável de ambiente 'VITE_GEMINI_API_KEY' não foi configurada."
     );
   }
   return new GoogleGenAI({
@@ -107,7 +112,7 @@ export async function callAIAction(body: {
     });
 
     if (response.ok && !(await isHtmlResponse(response))) {
-      return await response.json();
+      return preprocessGeminiResponse(await response.json());
     }
   } catch (err) {
     console.warn("Backend server not available. Falling back to client-side direct Gemini call...", err);
@@ -128,7 +133,15 @@ export async function callAIAction(body: {
       contextText ? `Dúvida específica ou questão do aluno: ${contextText}\n\n` : ""
     }Por favor, inclua:\n1. Conceito principal e base jurídica/teórica aplicável\n2. Pontos de atenção e possíveis pegadinhas que a banca costuma cobrar nos concursos de Oficial (CFO) e Soldado da Bahia\n3. Um exemplo prático ou mnemônico didático passo a passo para fixação absoluta.`;
   } else if (action === "summarize") {
-    prompt = `Monte um resumo estratégico e didático estruturado passo a passo de alta memorização para o assunto "${topic}" da disciplina de "${subject}". \n\nEstruture o resumo com tópicos claros, tabelas em Markdown e mnemônicos pedagógicos de fixação rápida. Ao final, inclua uma seção "Checklist dos 5 Pontos de Ouro" indispensáveis para revisar na véspera da prova.`;
+    prompt = `Monte um resumo extremamente completo, aprofundado e detalhado para o assunto "${topic}" dentro da disciplina de "${subject}", focado estritamente no conteúdo programático e no que é mais recorrentemente cobrado nas provas de Soldado e Oficial (CFO) da Polícia Militar da Bahia (PMBA).
+
+Por favor, elabore o conteúdo com máximo detalhamento doutrinário e legal, incluindo:
+1. ANÁLISE JURÍDICA/TEÓRICA PROFUNDA: Explique detalhadamente cada conceito, classificações, teorias aceitas, e cite os respectivos artigos de lei (Constituição Federal, Código Penal, Código de Processo Penal, Estatuto dos Policiais Militares da Bahia - Lei 7.990/01, etc.).
+2. TABELAS COMPARATIVAS E MNEMÔNICOS: Apresente tabelas comparativas robustas em Markdown para diferenciar conceitos próximos que a banca tenta confundir. Inclua mnemônicos pedagógicos célebres e criativos para memorização de prazos e requisitos legais.
+3. PREFERÊNCIA DA BANCA (IBFC/PMBA): Destaque as principais pegadinhas, "cascas de banana" históricas e tendências de cobrança das provas da PMBA para este exato assunto.
+4. "OS 5 PONTOS DE OURO DA VÉSPERA": Uma lista extremamente detalhada com 5 direcionamentos cruciais para revisão rápida.
+
+Diretriz de formatação: Evite excesso de asteriscos. NUNCA use palavras incompletas ou abreviações obscuras. Escreva todas as palavras por extenso de forma clara e limpa.`;
   } else if (action === "questions") {
     prompt = `Gere exatamente 20 questões semelhantes de múltipla escolha focadas no concurso da PMBA para o assunto "${topic}" da disciplina de "${subject}". \n\nAs questões devem cobrir o nível exigido para os concursos da Bahia. Para cada questão:\n- Insira o enunciado claro com 5 alternativas (A, B, C, D, E).\n- Logo após cada questão, inclua o Gabarito Comentado didático explicativo justificando passo a passo por que a resposta correta é aquela e por que as outras estão incorretas.\n\nFormate as questões de forma legível e numerada de 1 a 20.`;
   } else if (action === "flashcards") {
@@ -250,7 +263,7 @@ Retorne APENAS o objeto JSON puro, sem blocos de código markdown ou texto expli
     throw new Error("Não foi recebido texto da Inteligência Artificial.");
   }
 
-  return { text: response.text };
+  return preprocessGeminiResponse({ text: response.text });
 }
 
 /**
@@ -266,7 +279,7 @@ export async function callAIOcr(body: { image: string; mimeType?: string }): Pro
     });
 
     if (response.ok && !(await isHtmlResponse(response))) {
-      return await response.json();
+      return preprocessGeminiResponse(await response.json());
     }
   } catch (err) {
     console.warn("Backend server not available. Falling back to client-side OCR direct Gemini call...", err);
@@ -304,7 +317,7 @@ export async function callAIOcr(body: { image: string; mimeType?: string }): Pro
     throw new Error("Não foi possível extrair nenhum texto da imagem.");
   }
 
-  return { text: response.text };
+  return preprocessGeminiResponse({ text: response.text });
 }
 
 /**
@@ -324,7 +337,7 @@ export async function callAICorrectEssay(body: {
     });
 
     if (response.ok && !(await isHtmlResponse(response))) {
-      return await response.json();
+      return preprocessGeminiResponse(await response.json());
     }
   } catch (err) {
     console.warn("Backend server not available. Falling back to client-side direct essay correction...", err);
@@ -335,32 +348,61 @@ export async function callAICorrectEssay(body: {
   const { theme, essayText, studentName } = body;
 
   const prompt = `Você é o "Tenente Corretor", um oficial experiente e rigoroso da Polícia Militar da Bahia (PMBA) e especialista na correção de redações para o concurso de Soldado e Oficial (CFO) da PMBA, seguindo os critérios de avaliação da banca examinadora (como a IBFC).
-Seu objetivo é corrigir a redação do aluno ${studentName || "Recruta"} com base no Tema proposto de forma realista, técnica e didática.
+Seu objetivo é corrigir a redação do aluno ${studentName || "Recruta"} com base no Tema proposto de forma realista, técnica, extremamente detalhada e didática.
 
 Tema da Redação: "${theme}"
 Texto da Redação:
 "${essayText}"
 
-Você DEVE avaliar a redação de forma realista e pedagógica (instruindo o aluno de forma disciplinada, mas encorajadora), pontuando de 0 a 100 pontos no total, divididos em 4 critérios formais da PMBA:
-1. Tema e Texto Dissertativo-Argumentativo (Até 20 pontos): Avalie a adequação ao tema proposto, clareza e estrutura dissertativa com introdução, desenvolvimento e conclusão.
-2. Coesão e Coerência (Até 25 pontos): Avalie a conexão entre as orações e parágrafos, uso adequado de conectivos de transição, coerência lógica das ideias.
-3. Informatividade e Argumentação (Até 25 pontos): Avalie a consistência e profundidade dos argumentos, presença de repertório sociocultural legítimo e produtividade.
-4. Norma Culta / Gramática (Até 30 pontos): Avalie desvios gramaticais (ortografia, concordância, regência, crase, pontuação, acentuação, translineação).
+Você DEVE realizar uma avaliação profunda, realista e pedagógica de altíssimo nível (equivalente a uma banca examinadora de elite). A sua avaliação deve seguir uma estrutura baseada estritamente nas 5 competências fundamentais exigidas para a redação da PMBA, sem mencionar em hipótese alguma o nome, termo ou sigla "ENEM".
 
-A pontuação total (overallScore) DEVE ser exatamente a soma dos quatro critérios acima.
+Avalie o texto minuciosamente e atribua notas de 0 a 20 pontos para cada uma das 5 competências específicas abaixo (totalizando exatamente 100 pontos):
+
+1. GRAMÁTICA (Até 20 pontos) [grammarScore]:
+   - Critério: Rigor ortográfico, regência verbal/nominal, concordância verbal/nominal, crase, pontuação, acentuação, colocação pronominal e adequação vocabular ao registro culto da Língua Portuguesa.
+
+2. ESTRUTURA (Até 20 pontos) [structureScore]:
+   - Critério: Domínio da estrutura do texto dissertativo-argumentativo, com divisão clara e harmônica em parágrafos (Introdução com tese explícita, dois parágrafos de Desenvolvimento bem delineados e Conclusão consistente).
+
+3. CONTEÚDO (Até 20 pontos) [contentScore]:
+   - Critério: Fidelidade total ao tema proposto, abordagem completa sem tangenciamento, clareza, relevância e consistência das ideias e informações apresentadas de forma articulada.
+
+4. COESÃO (Até 20 pontos) [cohesionScore]:
+   - Critério: Emprego estratégico de conectivos interparágrafos e intraparágrafos para promover uma conexão lógica, fluida e clara entre as orações e parágrafos, sem repetições viciosas, gerundismos ou contradições.
+
+5. ARGUMENTAÇÃO (Até 20 pontos) [argumentationScore]:
+   - Critério: Consistência argumentativa, fundamentação crítica de pontos de vista, capacidade de persuasão e articulação produtiva de repertório sociocultural legítimo (dados, filosofia, leis, fatos históricos).
+
+A pontuação total (overallScore) DEVE ser a soma matemática exata das cinco notas acima (entre 0 e 100).
+
+DIRETRIZ DE ESCRITA E FORMATAÇÃO RIGOROSA E OBRIGATÓRIA:
+- PROIBIDO TERMINANTEMENTE O USO DE QUALQUER CARACTERE DE ASTERISCO (* ou **) no texto das respostas. Para dar destaque a títulos ou seções, use letras maiúsculas (CAIXA ALTA) ou hífens (-). NUNCA utilize asteriscos em nenhuma hipótese, pois isso quebra o nosso renderizador de redações e gera poluição visual!
+- PROIBIDO o uso de palavras abreviadas ou incompletas (como "vc", "tbm", "p/", "q", etc.). Todas as palavras devem ser escritas por extenso, de forma impecável, com todas as letras em português legível completo. Se for usar nomes de leis ou órgãos, escreva por extenso primeiro.
+- Os retornos de cada feedback devem ser densos, ricos, repletos de sugestões concretas e exemplos práticos para o aluno.
 
 Responda UNICAMENTE com um objeto JSON estruturado contendo exatamente as seguintes propriedades, sem tags de markdown extras fora da estrutura do JSON (retorne o JSON puro):
 {
-  "themeAndStructureScore": number (entre 0 e 20),
-  "cohesionCoherenceScore": number (entre 0 e 25),
-  "informativeArgumentativeScore": number (entre 0 e 25),
-  "grammarFormalNormScore": number (entre 0 e 30),
-  "overallScore": number (soma exata dos quatro anteriores, entre 0 e 100),
-  "themeFeedback": "feedback detalhado e didático em formato markdown sobre tema e estrutura dissertativa",
-  "cohesionFeedback": "feedback detalhado em formato markdown sobre coesão, coerência e conectivos",
-  "argumentationFeedback": "feedback detalhado em formato markdown sobre repertório sociocultural, profundidade e argumentação",
-  "grammarFeedback": "lista organizada de desvios gramaticais específicos encontrados no texto e como corrigi-los, em formato markdown",
-  "rewrittenText": "versão perfeita e polida da redação reescrita por você, mantendo a essência do aluno mas corrigindo tudo, servindo de modelo exemplar de nota 100 para o aluno estudar"
+  "grammarScore": number (entre 0 e 20),
+  "structureScore": number (entre 0 e 20),
+  "contentScore": number (entre 0 e 20),
+  "cohesionScore": number (entre 0 e 20),
+  "argumentationScore": number (entre 0 e 20),
+  "overallScore": number (soma exata das 5 notas anteriores, entre 0 e 100),
+  "grammarFeedbackText": "feedback detalhado e didático com análise de erros gramaticais e sugestões de correção",
+  "structureFeedbackText": "feedback detalhado sobre a estrutura dissertativa, paragrafação e organização do texto",
+  "contentFeedbackText": "feedback detalhado sobre pertinência do conteúdo e fidelidade ao tema",
+  "cohesionFeedbackText": "feedback detalhado sobre o uso de elementos coesivos, conexão lógica e clareza",
+  "argumentationFeedbackText": "feedback detalhado sobre a solidez da argumentação, senso crítico e repertório sociocultural",
+  "rewrittenText": "versão perfeita e polida da redação reescrita por você, mantendo a essência do aluno mas corrigindo tudo, servindo de modelo exemplar de nota 100 para o aluno estudar",
+  
+  "themeAndStructureScore": number,
+  "cohesionCoherenceScore": number,
+  "informativeArgumentativeScore": number,
+  "grammarFormalNormScore": number,
+  "themeFeedback": "feedback compatibilidade tema",
+  "cohesionFeedback": "feedback compatibilidade coesao",
+  "argumentationFeedback": "feedback compatibilidade argumentacao",
+  "grammarFeedback": "feedback compatibilidade gramatica"
 }`;
 
   const response = await generateContentWithRetryClient(ai, {
@@ -376,7 +418,7 @@ Responda UNICAMENTE com um objeto JSON estruturado contendo exatamente as seguin
     throw new Error("A IA não retornou o resultado da correção.");
   }
 
-  return JSON.parse(response.text.trim());
+  return preprocessGeminiResponse(JSON.parse(response.text.trim()));
 }
 
 /**
@@ -395,7 +437,7 @@ export async function callAIGenerateTheme(body: {
     });
 
     if (response.ok && !(await isHtmlResponse(response))) {
-      return await response.json();
+      return preprocessGeminiResponse(await response.json());
     }
   } catch (err) {
     console.warn("Backend server not available. Falling back to client-side direct theme generation...", err);
@@ -437,6 +479,6 @@ Responda UNICAMENTE com um objeto JSON estruturado contendo exatamente as seguin
     throw new Error("A IA não retornou o tema gerado.");
   }
 
-  return JSON.parse(response.text.trim());
+  return preprocessGeminiResponse(JSON.parse(response.text.trim()));
 }
 

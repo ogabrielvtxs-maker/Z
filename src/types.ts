@@ -142,6 +142,20 @@ export interface EssaySubmission {
     argumentationFeedback: string;
     grammarFeedback: string;
     rewrittenText: string;
+
+    // PMBA 5 Competencies (each 0 to 20 points, sum 100)
+    grammarScore?: number;
+    structureScore?: number;
+    contentScore?: number;
+    cohesionScore?: number;
+    argumentationScore?: number;
+
+    // Feedback for 5 competencies
+    grammarFeedbackText?: string;
+    structureFeedbackText?: string;
+    contentFeedbackText?: string;
+    cohesionFeedbackText?: string;
+    argumentationFeedbackText?: string;
   };
 }
 
@@ -150,6 +164,13 @@ export interface EssayTheme {
   title: string;
   motivatingText?: string;
   category?: "soldado" | "cfo" | "geral";
+  createdAt: string;
+}
+
+export interface StudyModule {
+  id: string;
+  name: string;
+  description?: string;
   createdAt: string;
 }
 

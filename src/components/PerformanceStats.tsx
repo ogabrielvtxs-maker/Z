@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { PerformanceLog, User, SyllabusSection } from "../types";
-import { AlertCircle, Plus, Filter, Trash2, TrendingUp, BarChart2, ShieldAlert, Award, Clock, Layers, BookOpen } from "lucide-react";
+import { AlertCircle, Plus, Filter, Trash2, TrendingUp, BarChart2, ShieldAlert, Award, Clock, Layers, BookOpen, ClipboardList } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, PieChart, Pie, Cell } from "recharts";
 import { 
   fetchPerformanceLogsFromFirestore, 
@@ -49,6 +49,7 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
   const [logs, setLogs] = useState<PerformanceLog[]>([]);
   const [subject, setSubject] = useState<string>("");
   const [topic, setTopic] = useState<string>("");
+  const [isCustomTopic, setIsCustomTopic] = useState<boolean>(false);
   const [reason, setReason] = useState<string>("");
   const [attempted, setAttempted] = useState<number>(10);
   const [correct, setCorrect] = useState<number>(8);
@@ -61,6 +62,9 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
 
   const [syllabus, setSyllabus] = useState<SyllabusSection[]>([]);
   const [syllabusTab, setSyllabusTab] = useState<"cfo" | "soldado">("soldado");
+
+  // Custom tabs for compact visual hierarchy
+  const [activeTab, setActiveTab] = useState<"caderno" | "diagnostico" | "diretrizes">("caderno");
 
   // Custom modals to bypass iframe window.confirm & alert blocks
   const [customConfirm, setCustomConfirm] = useState<{
@@ -158,6 +162,16 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
   // Calculations for edital coverage
   const currentSyllabusSections = syllabus.length > 0 ? syllabus : initialSyllabusData;
   const filteredSyllabusSections = currentSyllabusSections.filter((s) => s.category === syllabusTab);
+  
+  const availableSubjects = filteredSyllabusSections.map((s) => s.subject);
+  const activeSection = filteredSyllabusSections.find((s) => s.subject === subject);
+  const availableTopicsForSubject = activeSection ? activeSection.topics.map((t) => t.title) : [];
+
+  useEffect(() => {
+    setSubject("");
+    setTopic("");
+    setIsCustomTopic(false);
+  }, [syllabusTab]);
   
   const totalSyllabusTopicsCount = filteredSyllabusSections.reduce((acc, curr) => acc + curr.topics.length, 0);
   const completedSyllabusTopicsCount = filteredSyllabusSections.reduce((acc, curr) => acc + curr.topics.filter((t) => t.isCompleted).length, 0);
@@ -522,387 +536,60 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
   const totalWeeklyStudyHours = studyHoursData.reduce((sum, d) => sum + d.hours, 0);
 
   return (
-    <div id="performance-stats-component" className="space-y-6">
-      
-      {/* Controle de Constância / Estudo Semanal */}
-      {!isViewingAsAdmin && <ConsistencyWidget currentUser={currentUser} />}
-
-      {/* Diagnóstico Inteligente */}
-      <SmartDiagnostic 
-        studentId={targetStudentId} 
-        studentName={isViewingAsAdmin ? "do Aluno" : currentUser.name} 
-      />
-      
-      {/* Overview Banner */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-xl">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-bold flex items-center gap-2 text-amber-400">
-              <TrendingUp className="w-6 h-6 text-amber-500" />
-              Estatísticas de Desempenho
-            </h2>
-            <p className="text-slate-400 text-xs mt-1">
-              {isViewingAsAdmin 
-                ? `Análise individual das métricas e caderno de erros do aluno.` 
-                : "Acompanhe sua evolução em tempo real e identifique os principais motivos de erro."}
-            </p>
-          </div>
-          {isViewingAsAdmin && (
-            <div className="bg-red-500/10 border border-red-500/30 px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-red-400 text-xs font-semibold">
-              <ShieldAlert className="w-4 h-4" />
-              <span>Visão Administrador</span>
-            </div>
-          )}
-        </div>
-
-        {/* Global Summary Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6">
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-            <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Questões Feitas</span>
-            <span className="text-2xl font-bold font-mono block mt-1 text-slate-100">{totalAttempted}</span>
-          </div>
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-            <span className="text-[10px] text-emerald-400 font-semibold uppercase tracking-wider block">Total Acertos</span>
-            <span className="text-2xl font-bold font-mono block mt-1 text-emerald-400">{totalCorrect}</span>
-          </div>
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-            <span className="text-[10px] text-rose-400 font-semibold uppercase tracking-wider block">Total Erros</span>
-            <span className="text-2xl font-bold font-mono block mt-1 text-rose-400">{totalIncorrect}</span>
-          </div>
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-            <span className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider block">Aproveitamento</span>
-            <span className="text-2xl font-bold font-mono block mt-1 text-amber-400">{overallRate}%</span>
-          </div>
-        </div>
-
-        {/* Time Filters and Clear Data Control Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-slate-800/80 pt-4 mt-4">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] text-slate-400 uppercase font-black tracking-widest mr-2">Filtro Temporal:</span>
-            {[
-              { id: "all", label: "Histórico Geral" },
-              { id: "1", label: "Últimas 24h" },
-              { id: "7", label: "Últimos 7 dias" },
-              { id: "30", label: "Últimos 30 dias" },
-            ].map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setTimeFilter(f.id as any)}
-                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
-                  timeFilter === f.id
-                    ? "bg-amber-400 text-slate-950 font-black"
-                    : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-850"
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-
-          <button
-            type="button"
-            onClick={handleClearAllData}
-            className="flex items-center gap-1 px-3 py-1 bg-rose-950/40 border border-rose-900/50 text-rose-400 hover:bg-rose-900/20 rounded-lg text-[10px] font-bold transition cursor-pointer uppercase tracking-wider"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            Apagar Histórico
-          </button>
-        </div>
-      </div>
-
-      {/* Charts Row: Study Hours and Edital Progress */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div id="performance-stats-component" className="max-w-7xl mx-auto text-white">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-start">
         
-        {/* Weekly Study Hours Bar Chart */}
-        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2">
-              <Clock className="w-5 h-5 text-amber-400" />
-              <div>
-                <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider">Tempo de Estudo Semanal</h3>
-                <p className="text-[10px] text-slate-400">Tempo de estudo diário acumulado ao longo da semana baseado nas metas e questões concluídas.</p>
-              </div>
-            </div>
-            <div className="bg-amber-400/10 border border-amber-400/20 px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-amber-400 text-xs font-semibold self-start sm:self-auto">
-              <span>Carga Semanal Acumulada:</span>
-              <span className="font-mono text-white font-bold">{totalWeeklyStudyHours.toFixed(1)}h</span>
-            </div>
-          </div>
-
-          <div className="h-[260px] w-full pt-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={studyHoursData} margin={{ top: 10, right: 10, left: -25, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.3} vertical={false} />
-                <XAxis 
-                  dataKey="name" 
-                  stroke="#64748b" 
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis 
-                  stroke="#64748b" 
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  unit="h"
-                />
-                <Tooltip
-                  cursor={{ fill: '#1e293b', opacity: 0.15 }}
-                  content={({ active, payload }) => {
-                    if (active && payload && payload.length) {
-                      return (
-                        <div className="bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl shadow-xl text-xs space-y-1">
-                          <p className="font-bold text-slate-200">{payload[0].payload.name}</p>
-                          <p className="font-semibold text-amber-400">
-                            Estudado: <span className="font-mono text-white font-bold">{payload[0].value}</span> horas
-                          </p>
-                        </div>
-                      );
-                    }
-                    return null;
-                  }}
-                />
-                <Bar 
-                  dataKey="hours" 
-                  fill="#f59e0b" 
-                  radius={[6, 6, 0, 0]}
-                  maxBarSize={45}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Edital Verticalizado Donut Chart */}
-        <div className="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl flex flex-col justify-between space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3 gap-2">
-            <div className="flex items-center gap-2">
-              <Layers className="w-5 h-5 text-amber-400" />
-              <div>
-                <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider">Edital Verticalizado</h3>
-                <p className="text-[10px] text-slate-400">Progresso total de conclusão</p>
-              </div>
+        {/* Left column: Log Input Form (Only for Student) */}
+        {!isViewingAsAdmin && (
+          <div className="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-3xl p-5 text-white shadow-2xl space-y-4 lg:sticky lg:top-4 z-10">
+            <div className="border-b border-slate-800 pb-3">
+              <h3 className="font-black text-sm text-slate-200 flex items-center gap-2 uppercase tracking-wider">
+                <Plus className="w-4.5 h-4.5 text-amber-400" />
+                Lançar Questões
+              </h3>
+              <p className="text-[10px] text-slate-400 mt-1 leading-normal">
+                Insira o resultado das suas sessões de exercícios baseadas no edital.
+              </p>
             </div>
             
-            {/* Course Selector Toggle / Badge */}
-            {currentUser.accessCFO && currentUser.accessSoldado ? (
-              <div className="flex gap-1 bg-slate-950 p-1 rounded-lg border border-slate-850 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setSyllabusTab("soldado")}
-                  className={`px-2 py-1 rounded text-[9px] font-black uppercase transition cursor-pointer ${
-                    syllabusTab === "soldado" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
-                  }`}
-                >
-                  Soldado
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSyllabusTab("cfo")}
-                  className={`px-2 py-1 rounded text-[9px] font-black uppercase transition cursor-pointer ${
-                    syllabusTab === "cfo" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
-                  }`}
-                >
-                  CFO
-                </button>
-              </div>
-            ) : (
-              <span className="bg-slate-950 text-amber-400 border border-amber-400/20 px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider shrink-0">
-                {syllabusTab === "soldado" ? "Soldado" : "CFO"}
-              </span>
-            )}
-          </div>
-
-          <div className="relative w-full h-[150px] flex items-center justify-center">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={donutData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={50}
-                  outerRadius={68}
-                  paddingAngle={3}
-                  dataKey="value"
-                >
-                  {donutData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} stroke="#0f172a" strokeWidth={2} />
-                  ))}
-                </Pie>
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="absolute flex flex-col items-center justify-center">
-              <span className="text-2xl font-black font-mono text-amber-400">{aggregateSyllabusCompletionPct}%</span>
-              <span className="text-[9px] text-slate-400 uppercase tracking-widest font-bold text-center">Progresso<br/>Agregado</span>
-            </div>
-          </div>
-
-          <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-850 text-center space-y-1">
-            <div className="flex justify-between text-[11px] font-medium text-slate-300">
-              <span>Metas Concluídas:</span>
-              <span className="font-mono font-bold text-amber-400">
-                {completedCheckpoints} de {totalCheckpoints}
-              </span>
-            </div>
-            <p className="text-[9px] text-slate-400 text-left leading-normal pt-1 border-t border-slate-900/50">
-              * O progresso agregado pondera leitura de teoria, resumos elaborados e sessões de exercícios praticadas em todos os assuntos.
-            </p>
-          </div>
-
-          {/* Subjects Progress List */}
-          <div className="space-y-2">
-            <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-              Cobertura por Disciplina (Teoria)
-            </h4>
-            <div className="space-y-2 max-h-[105px] overflow-y-auto pr-1">
-              {subjectProgressList.map((item) => (
-                <div key={item.subject} className="space-y-0.5">
-                  <div className="flex justify-between text-[10px] text-slate-300">
-                    <span className="truncate max-w-[140px] font-medium">{item.subject}</span>
-                    <span className="font-mono text-slate-400 font-bold">{item.completed}/{item.total} ({item.pct}%)</span>
-                  </div>
-                  <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-850">
-                    <div 
-                      className="bg-amber-400 h-full rounded-full transition-all duration-500" 
-                      style={{ width: `${item.pct}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-      {/* --- RANKING OF ERRORS & RECOMMENDATIONS (Ranking de Erros e Melhorias por Assunto) --- */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 text-rose-500" />
-            <div>
-              <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider">Ranking dos Erros por Assunto</h3>
-              <p className="text-[10px] text-slate-400">Identifique os assuntos mais críticos do seu edital e saiba exatamente o que você deve melhorar em cada um.</p>
-            </div>
-          </div>
-          <span className="bg-rose-950/50 border border-rose-900/50 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider text-rose-400">
-            Foco Máximo de Revisão
-          </span>
-        </div>
-
-        {errorRankingList.length === 0 ? (
-          <div className="text-center py-6 text-slate-500 text-xs font-medium">
-            Nenhum erro registrado no período selecionado. Excelente trabalho de fixação teórica!
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-slate-800/80 text-[10px] font-black uppercase tracking-widest text-slate-400">
-                  <th className="py-2.5">Assunto / Tópico</th>
-                  <th className="py-2.5 text-center">Quantidade de Erros</th>
-                  <th className="py-2.5 text-center">Aproveitamento Global</th>
-                  <th className="py-2.5">Principal Causa</th>
-                  <th className="py-2.5">O que Deve Melhorar (Diretriz de Correção)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-850">
-                {errorRankingList.map((item, idx) => (
-                  <tr key={idx} className="hover:bg-slate-950/25 transition">
-                    <td className="py-3">
-                      <span className="block font-extrabold text-slate-200">{item.topic}</span>
-                      <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">{item.subject}</span>
-                    </td>
-                    <td className="py-3 text-center font-mono font-bold text-rose-400">
-                      {item.mistakesCount} erros
-                    </td>
-                    <td className="py-3 text-center">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                        item.correctRate < 50 
-                          ? "bg-rose-950/40 text-rose-400 border border-rose-900/30" 
-                          : "bg-amber-950/40 text-amber-400 border border-amber-900/30"
-                      }`}>
-                        {item.correctRate}%
-                      </span>
-                    </td>
-                    <td className="py-3 font-semibold text-slate-300">
-                      {item.mostCommonReason}
-                    </td>
-                    <td className="py-3 text-amber-300 text-[11px] leading-normal font-medium max-w-[280px]">
-                      {item.improvementAdvice}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Dynamic Tactical Advisor Panel (Orientador Tático de Ações) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl space-y-4">
-        <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
-          <Award className="w-5 h-5 text-amber-400" />
-          <div>
-            <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider">Diretrizes Táticas de Estudos (Por Assunto)</h3>
-            <p className="text-[10px] text-slate-400">Plano de ação e diretrizes sugeridas automaticamente com base no seu aproveitamento para os assuntos adicionados.</p>
-          </div>
-        </div>
-
-        {subjectTopicTacticalFeedback.length === 0 ? (
-          <div className="text-center py-6 text-slate-500 text-xs font-medium">
-            Nenhum assunto lançado no histórico de desempenho para fornecer feedback. Adicione seus logs de questões abaixo para ver as recomendações táticas.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[350px] overflow-y-auto pr-1">
-            {subjectTopicTacticalFeedback.map((item) => (
-              <div key={item.key} className={`border p-4 rounded-xl space-y-3 transition hover:border-slate-700 ${item.borderClass}`}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <span className="text-[10px] text-slate-400 uppercase tracking-widest font-mono font-bold block truncate">{item.subject}</span>
-                    <span className="text-xs font-extrabold text-slate-100 block mt-0.5 truncate">{item.topic}</span>
-                  </div>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold shrink-0 ${item.badgeClass}`}>
-                    {item.pct}% de Acertos ({item.correct}/{item.attempted})
-                  </span>
-                </div>
-                
-                <div className="border-t border-slate-800/40 pt-2.5 space-y-1">
-                  <span className={`text-[10px] font-black uppercase tracking-wider block ${item.textClass}`}>
-                    {item.titleFeedback}
-                  </span>
-                  <p className="text-[11px] text-slate-300 leading-relaxed font-sans">
-                    {item.descriptionFeedback}
+            <form onSubmit={handleAddLog} className="space-y-4">
+              {currentUser.accessCFO && currentUser.accessSoldado ? (
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1 font-medium">Plano / Edital Selecionado</label>
+                  <select
+                    value={syllabusTab}
+                    onChange={(e) => setSyllabusTab(e.target.value as "cfo" | "soldado")}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-amber-400 cursor-pointer font-bold"
+                  >
+                    <option value="soldado">SOLDADO PMBA</option>
+                    <option value="cfo">CFO PMBA (OFICIAL)</option>
+                  </select>
+                  <p className="text-[9px] text-slate-500 mt-1">
+                    Selecione para alternar o menu suspenso de matérias entre Soldado e CFO.
                   </p>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              ) : (
+                <div>
+                  <span className="text-[10px] bg-slate-950 text-amber-400 border border-amber-400/20 px-2 py-1 rounded font-black uppercase tracking-wider block text-center">
+                    Edital Ativo: {syllabusTab === "soldado" ? "Soldado PMBA" : "CFO PMBA"}
+                  </span>
+                </div>
+              )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Log Input Form (Only for Student) */}
-        {!isViewingAsAdmin && (
-          <div className="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl self-start">
-            <h3 className="font-bold text-sm text-slate-200 flex items-center gap-2 mb-4 uppercase tracking-wider">
-              <Plus className="w-5 h-5 text-amber-400" />
-              Lançar Questões
-            </h3>
-            <form onSubmit={handleAddLog} className="space-y-4">
               <div>
                 <label className="block text-xs text-slate-400 mb-1 font-medium">Matéria</label>
                 <select
                   value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
+                  onChange={(e) => {
+                    setSubject(e.target.value);
+                    setTopic("");
+                    setIsCustomTopic(false);
+                  }}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-amber-400 cursor-pointer"
                   required
                 >
                   <option value="">Selecione a matéria...</option>
-                  {PRE_SEEDED_SUBJECTS.map((s) => (
+                  {availableSubjects.map((s) => (
                     <option key={s} value={s}>{s}</option>
                   ))}
                 </select>
@@ -910,14 +597,49 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
 
               <div>
                 <label className="block text-xs text-slate-400 mb-1 font-medium">Assunto / Tópico</label>
-                <input
-                  type="text"
-                  value={topic}
-                  onChange={(e) => setTopic(e.target.value)}
-                  placeholder="Ex: Teoria do Crime, Regência..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400"
-                  required
-                />
+                {!subject ? (
+                  <select
+                    disabled
+                    className="w-full bg-slate-950 border border-slate-800 opacity-60 rounded-lg px-3 py-2 text-sm text-slate-500 focus:outline-none"
+                  >
+                    <option value="">Selecione primeiro uma matéria...</option>
+                  </select>
+                ) : (
+                  <div className="space-y-2">
+                    <select
+                      value={isCustomTopic ? "custom" : topic}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "custom") {
+                          setIsCustomTopic(true);
+                          setTopic("");
+                        } else {
+                          setIsCustomTopic(false);
+                          setTopic(val);
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-amber-400 cursor-pointer"
+                      required
+                    >
+                      <option value="">Selecione o assunto...</option>
+                      {availableTopicsForSubject.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                      <option value="custom">★ Digitar assunto personalizado...</option>
+                    </select>
+
+                    {isCustomTopic && (
+                      <input
+                        type="text"
+                        value={topic}
+                        onChange={(e) => setTopic(e.target.value)}
+                        placeholder="Digite o assunto personalizado..."
+                        className="w-full bg-slate-950 border border-amber-500/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400 animate-fade-in"
+                        required
+                      />
+                    )}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -936,9 +658,9 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
 
                 <div className="mt-2 p-3 rounded-xl bg-amber-400/10 border border-amber-400/20 text-slate-200 text-xs leading-relaxed space-y-1">
                   <span className="font-extrabold text-amber-400 block uppercase tracking-wider text-[10px] flex items-center gap-1">
-                    ⚠️ Instrução de Estudo para Erros:
+                    ⚠️ Instrução de Estudo:
                   </span>
-                  <p>Atenção Recruta! Ao identificar o motivo do erro, você deve obrigatoriamente <strong>anotar este erro em seu Caderno de Erros</strong> e <strong>resolver novas questões de fixação</strong> para dominar o assunto!</p>
+                  <p>Anotar no Caderno de Erros e revisar o assunto antes do próximo simulado!</p>
                 </div>
               </div>
 
@@ -979,168 +701,562 @@ export default function PerformanceStats({ currentUser, overrideStudentId }: Per
           </div>
         )}
 
-        {/* Charts and Data (Fills remaining space) */}
-        <div className={`${isViewingAsAdmin ? "lg:col-span-3" : "lg:col-span-2"} space-y-6`}>
+        {/* Right column: study history dashboard */}
+        <div className={`${isViewingAsAdmin ? "lg:col-span-4" : "lg:col-span-3"} space-y-4`}>
           
-          {/* Analysis Charts Card */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl">
-            <h3 className="font-bold text-sm text-slate-200 flex items-center gap-2 mb-4 uppercase tracking-wider">
-              <BarChart2 className="w-5 h-5 text-amber-400" />
-              Anotar Erros & Resolver Questões
-            </h3>
-
-            {logs.length === 0 ? (
-              <div className="text-center py-10 text-slate-500 text-xs">
-                Insira registros de desempenho para ver o gráfico de erros.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                
-                {/* Subject Error Bar Chart */}
-                <div className="space-y-3">
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-800 pb-2">
-                    Erros por Matéria (Qtd)
-                  </h4>
-                  <div className="space-y-3">
-                    {sortedSubjectMistakes.slice(0, 5).map((item) => {
-                      const pct = Math.round((item.count / maxSubjectMistakes) * 100);
-                      return (
-                        <div key={item.name} className="space-y-1">
-                          <div className="flex justify-between text-xs text-slate-300">
-                            <span className="truncate max-w-[180px] font-medium">{item.name}</span>
-                            <span className="font-mono text-rose-400 font-bold">{item.count} erros</span>
-                          </div>
-                          <div className="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
-                            <div 
-                              className="bg-rose-500 h-full rounded-full transition-all duration-700" 
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Reason Error Bar Chart */}
-                <div className="space-y-3">
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-800 pb-2">
-                    Diagnóstico dos Erros (Qtd)
-                  </h4>
-                  <div className="space-y-3">
-                    {sortedReasonMistakes.slice(0, 5).map((item) => {
-                      const pct = Math.round((item.count / maxReasonMistakes) * 100);
-                      return (
-                        <div key={item.name} className="space-y-1">
-                          <div className="flex justify-between text-xs text-slate-300">
-                            <span className="truncate max-w-[180px] font-medium">{item.name}</span>
-                            <span className="font-mono text-amber-400 font-bold">{item.count} erros</span>
-                          </div>
-                          <div className="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
-                            <div 
-                              className="bg-amber-400 h-full rounded-full transition-all duration-700" 
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-              </div>
-            )}
-          </div>
-
-          {/* History table and Filters */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white shadow-xl">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 border-b border-slate-800 pb-4">
-              <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider">
-                Caderno de Erros / Histórico
-              </h3>
-              
-              {/* Dynamic Filters */}
-              <div className="flex items-center gap-2">
-                <Filter className="w-4 h-4 text-slate-400" />
-                <select
-                  value={filterSubject}
-                  onChange={(e) => setFilterSubject(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-300 focus:outline-none cursor-pointer"
-                >
-                  <option value="Todos">Todas Matérias</option>
-                  {PRE_SEEDED_SUBJECTS.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
+          {/* 1. COMPACT DASHBOARD HEADER */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <TrendingUp className="w-5 h-5 text-amber-500 shrink-0" />
+              <div>
+                <h2 className="text-base font-extrabold text-slate-100 flex items-center gap-2 uppercase tracking-wide">
+                  Dashboard de Desempenho
+                  {isViewingAsAdmin && (
+                    <span className="text-[9px] bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-0.5 rounded uppercase font-black tracking-widest ml-2">
+                      ADMIN
+                    </span>
+                  )}
+                </h2>
+                <p className="text-slate-400 text-[10px]">
+                  Métricas agregadas, cobertura de edital e análises automatizadas de erro.
+                </p>
               </div>
             </div>
 
-            {filteredLogs.length === 0 ? (
-              <div className="text-center py-8 text-slate-500 text-xs">
-                Nenhum log correspondente aos filtros.
+            {/* Time filters & Actions */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-850">
+                {[
+                  { id: "all", label: "Geral" },
+                  { id: "1", label: "24h" },
+                  { id: "7", label: "7d" },
+                  { id: "30", label: "30d" },
+                ].map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setTimeFilter(f.id as any)}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                      timeFilter === f.id
+                        ? "bg-amber-400 text-slate-950 font-black"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
               </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider">
-                      <th className="py-2.5 font-semibold">Data</th>
-                      <th className="py-2.5 font-semibold">Matéria / Assunto</th>
-                      <th className="py-2.5 font-semibold">Motivo do Erro</th>
-                      <th className="py-2.5 font-semibold text-center">Acertos</th>
-                      <th className="py-2.5 font-semibold text-center">Desempenho</th>
-                      <th className="py-2.5 font-semibold text-center">Ações</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/40">
-                    {filteredLogs.map((log) => {
-                      const missed = log.questionsAttempted - log.questionsCorrect;
-                      const pct = Math.round((log.questionsCorrect / log.questionsAttempted) * 100);
-                      
-                      return (
-                        <tr key={log.id} className="hover:bg-slate-950/25 transition">
-                          <td className="py-3 text-slate-400 font-mono">{log.date}</td>
-                          <td className="py-3 pr-2">
-                            <span className="font-bold text-slate-200 block">{log.subject}</span>
-                            <span className="text-[10px] text-slate-400 block mt-0.5">{log.topic}</span>
-                          </td>
-                          <td className="py-3 text-slate-300">
-                            <div className="flex items-center gap-1">
-                              <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-                              <span className="truncate max-w-[150px] sm:max-w-xs">{log.reasonForError}</span>
-                            </div>
-                          </td>
-                          <td className="py-3 text-center font-mono text-slate-300 font-medium">
-                            {log.questionsCorrect}/{log.questionsAttempted}
-                          </td>
-                          <td className="py-3 text-center">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                              pct >= 70 
-                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
-                                : pct >= 50 
-                                ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" 
-                                : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
-                            }`}>
-                              {pct}%
-                            </span>
-                          </td>
-                          <td className="py-3 text-center">
-                            <button
-                              onClick={() => handleDeleteLog(log.id)}
-                              className="p-1 rounded hover:bg-red-500/10 text-slate-400 hover:text-red-400 transition cursor-pointer"
-                              title="Excluir"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </td>
+
+              {!isViewingAsAdmin && (
+                <button
+                  type="button"
+                  onClick={handleClearAllData}
+                  className="p-2 bg-rose-950/20 border border-rose-900/30 hover:bg-rose-900/20 text-rose-400 rounded-xl transition cursor-pointer"
+                  title="Apagar Histórico"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 2. COMPACT BENTO KPI GRID (4 cards in a row) */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            
+            {/* Card A: Exercícios */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow-xl flex flex-col justify-between h-[115px]">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Exercícios</span>
+                <ClipboardList className="w-4 h-4 text-slate-400" />
+              </div>
+              <div>
+                <span className="text-2xl font-black font-mono block text-slate-100">{totalAttempted}</span>
+                <div className="flex justify-between items-center text-[10px] text-slate-400 mt-1">
+                  <span className="text-emerald-400 font-medium">{totalCorrect} acertos</span>
+                  <span className="text-rose-400 font-medium">{totalIncorrect} erros</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Card B: Índice de Aproveitamento */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow-xl flex flex-col justify-between h-[115px]">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Aproveitamento</span>
+                <TrendingUp className="w-4 h-4 text-amber-500" />
+              </div>
+              <div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-2xl font-black font-mono block text-amber-400">{overallRate}%</span>
+                  <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${
+                    overallRate >= 70 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" :
+                    overallRate >= 50 ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" :
+                    "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                  }`}>
+                    {overallRate >= 70 ? "Meta 🔥" : overallRate >= 50 ? "Regular ⚠️" : "Abaixo 🔴"}
+                  </span>
+                </div>
+                <p className="text-[9px] text-slate-500 mt-1 truncate font-sans">Média de acerto nas sessões</p>
+              </div>
+            </div>
+
+            {/* Card C: Edital Cobertura */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow-xl flex flex-col justify-between h-[115px]">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Edital Verticalizado</span>
+                <Layers className="w-4 h-4 text-blue-400" />
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-2xl font-black font-mono block text-blue-400">{aggregateSyllabusCompletionPct}%</span>
+                  <span className="text-[9px] text-slate-500 block truncate">{completedCheckpoints}/{totalCheckpoints} check-ins</span>
+                </div>
+                {/* SVG circular progress indicator */}
+                <svg className="w-9 h-9 transform -rotate-90 text-blue-400 shrink-0" viewBox="0 0 36 36">
+                  <path
+                    className="text-slate-800"
+                    strokeWidth="3.5"
+                    stroke="currentColor"
+                    fill="none"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                  <path
+                    className="text-blue-400"
+                    strokeWidth="3.5"
+                    strokeDasharray={`${aggregateSyllabusCompletionPct}, 100`}
+                    strokeLinecap="round"
+                    stroke="currentColor"
+                    fill="none"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            {/* Card D: Estudo Semanal */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow-xl flex flex-col justify-between h-[115px]">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Carga Horária</span>
+                <Clock className="w-4 h-4 text-indigo-400" />
+              </div>
+              <div className="grid grid-cols-2 items-center gap-2">
+                <div>
+                  <span className="text-2xl font-black font-mono block text-indigo-400">{totalWeeklyStudyHours.toFixed(1)}h</span>
+                  <span className="text-[9px] text-slate-500 block">Esta Semana</span>
+                </div>
+                {/* Sparkline */}
+                <div className="flex gap-0.5 items-end h-7 justify-end">
+                  {studyHoursData.map((d, i) => {
+                    const maxH = Math.max(...studyHoursData.map(x => x.hours)) || 1;
+                    const hPct = Math.min(100, Math.round((d.hours / maxH) * 100));
+                    return (
+                      <div 
+                        key={i} 
+                        className="w-1.5 bg-slate-800 hover:bg-indigo-400 rounded-sm transition-all duration-300 group relative"
+                        style={{ height: `${Math.max(15, hPct)}%` }}
+                        title={`${d.name}: ${d.hours}h`}
+                      >
+                        <span className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-1 hidden group-hover:block bg-slate-950 text-[8px] px-1 py-0.5 rounded font-mono font-bold whitespace-nowrap z-30">
+                          {d.hours}h
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          {/* 3. COMPACT ANALYTICS PANEL (Weekly Hours Bar Chart & Cobertura progress side-by-side) */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow-xl">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+              
+              {/* Weekly study hours chart */}
+              <div className="lg:col-span-7 flex flex-col justify-between space-y-3 border-r border-slate-800/40 lg:pr-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-200">Tempo de Estudo Semanal</span>
+                  </div>
+                  <span className="text-[10px] bg-amber-400/10 text-amber-400 px-2 py-0.5 rounded font-mono font-bold">
+                    Total: {totalWeeklyStudyHours.toFixed(1)}h
+                  </span>
+                </div>
+                
+                <div className="h-[140px] w-full pt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={studyHoursData} margin={{ top: 5, right: 5, left: -30, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.25} vertical={false} />
+                      <XAxis dataKey="name" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} unit="h" />
+                      <Tooltip
+                        cursor={{ fill: '#1e293b', opacity: 0.15 }}
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            return (
+                              <div className="bg-slate-950 border border-slate-850 px-2.5 py-1.5 rounded-lg shadow-xl text-[11px] space-y-0.5">
+                                <p className="font-bold text-slate-300">{payload[0].payload.name}</p>
+                                <p className="text-amber-400 font-bold">Estudado: <span className="font-mono text-white">{payload[0].value}h</span></p>
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Bar dataKey="hours" fill="#f59e0b" radius={[4, 4, 0, 0]} maxBarSize={30} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Cobertura por disciplina progress bars */}
+              <div className="lg:col-span-5 flex flex-col justify-between space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-blue-400" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-200">Cobertura por Disciplina</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {currentUser.accessCFO && currentUser.accessSoldado ? (
+                      <div className="flex bg-slate-950 p-0.5 rounded-lg border border-slate-850">
+                        <button
+                          type="button"
+                          onClick={() => setSyllabusTab("soldado")}
+                          className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase transition cursor-pointer ${
+                            syllabusTab === "soldado" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
+                          }`}
+                        >
+                          SD
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSyllabusTab("cfo")}
+                          className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase transition cursor-pointer ${
+                            syllabusTab === "cfo" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
+                          }`}
+                        >
+                          CFO
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-[8px] bg-slate-950 text-amber-400 border border-amber-400/20 px-1.5 py-0.5 rounded font-black uppercase">
+                        {syllabusTab}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
+                  {subjectProgressList.map((item) => (
+                    <div key={item.subject} className="space-y-0.5">
+                      <div className="flex justify-between text-[9px] text-slate-300">
+                        <span className="truncate max-w-[130px] font-medium">{item.subject}</span>
+                        <span className="font-mono text-slate-400 font-bold">{item.completed}/{item.total} ({item.pct}%)</span>
+                      </div>
+                      <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-850">
+                        <div 
+                          className="bg-amber-400 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${item.pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          {/* 4. COMPACT TABBED INSIGHT WORKSPACE */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow-xl space-y-4">
+            
+            {/* Tab navigation bar */}
+            <div className="flex border-b border-slate-800 pb-2 gap-1 overflow-x-auto">
+              {[
+                { id: "caderno", label: "📂 Caderno de Erros (Histórico)", count: filteredLogs.length },
+                { id: "diagnostico", label: "📊 Diagnóstico & Ranking", count: errorRankingList.length },
+                { id: "diretrizes", label: "🎯 Diretrizes Táticas de Estudos", count: subjectTopicTacticalFeedback.length }
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold transition whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === tab.id
+                      ? "bg-amber-400 text-slate-950 font-black shadow-md"
+                      : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-850/50"
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  {tab.count > 0 && (
+                    <span className={`px-1.5 py-0.5 text-[9px] font-mono rounded-full font-bold ${
+                      activeTab === tab.id ? "bg-slate-950 text-amber-400" : "bg-slate-900 text-slate-400"
+                    }`}>
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab Content 1: Caderno de Erros (Logs) */}
+            {activeTab === "caderno" && (
+              <div className="space-y-4 animate-fade-in">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-950/40 p-2.5 rounded-xl border border-slate-850">
+                  <span className="text-[10px] text-slate-400 uppercase font-black tracking-wider flex items-center gap-1">
+                    <Filter className="w-3.5 h-3.5 text-amber-400" />
+                    Filtrar histórico por matéria:
+                  </span>
+                  <select
+                    value={filterSubject}
+                    onChange={(e) => setFilterSubject(e.target.value)}
+                    className="bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none cursor-pointer"
+                  >
+                    <option value="Todos">Todas as Matérias</option>
+                    {availableSubjects.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {filteredLogs.length === 0 ? (
+                  <div className="text-center py-10 text-slate-500 text-xs font-medium">
+                    Nenhum registro correspondente aos filtros neste período.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-bold">
+                          <th className="py-2.5 pl-2">Data</th>
+                          <th className="py-2.5">Matéria / Assunto</th>
+                          <th className="py-2.5">Causa do Erro</th>
+                          <th className="py-2.5 text-center">Acertos</th>
+                          <th className="py-2.5 text-center">Aproveitamento</th>
+                          <th className="py-2.5 text-center">Ações</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/40">
+                        {filteredLogs.map((log) => {
+                          const pct = Math.round((log.questionsCorrect / log.questionsAttempted) * 100);
+                          return (
+                            <tr key={log.id} className="hover:bg-slate-950/25 transition">
+                              <td className="py-2.5 pl-2 text-slate-400 font-mono">{log.date}</td>
+                              <td className="py-2.5">
+                                <span className="font-bold text-slate-200 block">{log.subject}</span>
+                                <span className="text-[10px] text-slate-400 block mt-0.5">{log.topic}</span>
+                              </td>
+                              <td className="py-2.5 text-slate-300">
+                                <div className="flex items-center gap-1">
+                                  <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                                  <span className="truncate max-w-[150px] sm:max-w-xs">{log.reasonForError}</span>
+                                </div>
+                              </td>
+                              <td className="py-2.5 text-center font-mono text-slate-300 font-semibold">
+                                {log.questionsCorrect}/{log.questionsAttempted}
+                              </td>
+                              <td className="py-2.5 text-center">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                  pct >= 70 
+                                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
+                                    : pct >= 50 
+                                    ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" 
+                                    : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                                }`}>
+                                  {pct}%
+                                </span>
+                              </td>
+                              <td className="py-2.5 text-center">
+                                <button
+                                  onClick={() => handleDeleteLog(log.id)}
+                                  className="p-1 rounded hover:bg-red-500/10 text-slate-400 hover:text-red-400 transition cursor-pointer"
+                                  title="Excluir"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
+
+            {/* Tab Content 2: Diagnóstico & Ranking */}
+            {activeTab === "diagnostico" && (
+              <div className="space-y-6 animate-fade-in">
+                
+                {/* Error Ranking Table */}
+                <div className="space-y-3 bg-slate-950/20 p-4 rounded-xl border border-slate-850/50">
+                  <div className="flex items-center justify-between border-b border-slate-800/60 pb-2">
+                    <span className="text-xs font-black uppercase tracking-wider text-slate-200">
+                      Top 5 Assuntos Mais Críticos (Foco de Erros)
+                    </span>
+                    <span className="text-[9px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded uppercase font-bold">
+                      Revisão Imediata
+                    </span>
+                  </div>
+
+                  {errorRankingList.length === 0 ? (
+                    <div className="text-center py-6 text-slate-500 text-xs">
+                      Nenhum erro registrado neste período. Excelente retenção!
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-800/80 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            <th className="py-2">Tópico / Disciplina</th>
+                            <th className="py-2 text-center">Qtd Erros</th>
+                            <th className="py-2 text-center">Aproveitamento</th>
+                            <th className="py-2">Causa Frequente</th>
+                            <th className="py-2">Diretriz de Correção</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-850">
+                          {errorRankingList.map((item, idx) => (
+                            <tr key={idx} className="hover:bg-slate-950/25 transition">
+                              <td className="py-2.5">
+                                <span className="block font-bold text-slate-200">{item.topic}</span>
+                                <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">{item.subject}</span>
+                              </td>
+                              <td className="py-2.5 text-center font-mono font-bold text-rose-400">
+                                {item.mistakesCount} erros
+                              </td>
+                              <td className="py-2.5 text-center">
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                  item.correctRate < 50 ? "bg-rose-950/40 text-rose-400 border border-rose-900/30" : "bg-amber-950/40 text-amber-400 border border-amber-900/30"
+                                }`}>
+                                  {item.correctRate}%
+                                </span>
+                              </td>
+                              <td className="py-2.5 font-semibold text-slate-300">
+                                {item.mostCommonReason}
+                              </td>
+                              <td className="py-2.5 text-amber-300 text-[11px] leading-normal font-medium max-w-[250px]">
+                                {item.improvementAdvice}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Diagnostic charts (side-by-side) */}
+                {logs.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-950/10 p-4 rounded-xl border border-slate-850/50">
+                    {/* Subject Error Bar Chart */}
+                    <div className="space-y-3">
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-300 block border-b border-slate-800/80 pb-1.5">
+                        Erros por Disciplina (Quantidade)
+                      </span>
+                      <div className="space-y-2.5">
+                        {sortedSubjectMistakes.slice(0, 4).map((item) => {
+                          const pct = Math.round((item.count / maxSubjectMistakes) * 100);
+                          return (
+                            <div key={item.name} className="space-y-1">
+                              <div className="flex justify-between text-xs text-slate-300">
+                                <span className="truncate max-w-[170px] font-medium">{item.name}</span>
+                                <span className="font-mono text-rose-400 font-bold">{item.count} erros</span>
+                              </div>
+                              <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                                <div 
+                                  className="bg-rose-500 h-full rounded-full transition-all duration-700" 
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Reason Error Bar Chart */}
+                    <div className="space-y-3">
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-300 block border-b border-slate-800/80 pb-1.5">
+                        Causa dos Erros (Por que Você Errou?)
+                      </span>
+                      <div className="space-y-2.5">
+                        {sortedReasonMistakes.slice(0, 4).map((item) => {
+                          const pct = Math.round((item.count / maxReasonMistakes) * 100);
+                          return (
+                            <div key={item.name} className="space-y-1">
+                              <div className="flex justify-between text-xs text-slate-300">
+                                <span className="truncate max-w-[170px] font-medium">{item.name}</span>
+                                <span className="font-mono text-amber-400 font-bold">{item.count} erros</span>
+                              </div>
+                              <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                                <div 
+                                  className="bg-amber-400 h-full rounded-full transition-all duration-700" 
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            )}
+
+            {/* Tab Content 3: Diretrizes Táticas */}
+            {activeTab === "diretrizes" && (
+              <div className="space-y-4 animate-fade-in">
+                <div className="bg-amber-400/5 border border-amber-400/20 p-3 rounded-xl text-xs leading-relaxed text-amber-200">
+                  <span className="font-bold text-amber-400 uppercase tracking-wider block mb-1">💡 Inteligência Tática Automática:</span>
+                  O sistema analisa individualmente sua assertividade em cada disciplina e sugere caminhos de correção específicos (Foco em Teoria vs. Treino Prático vs. Revisão de Leitura).
+                </div>
+
+                {subjectTopicTacticalFeedback.length === 0 ? (
+                  <div className="text-center py-10 text-slate-500 text-xs font-medium">
+                    Insira seus logs de questões no painel lateral para gerar diretrizes de estudo inteligentes.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[400px] overflow-y-auto pr-1 animate-fade-in">
+                    {subjectTopicTacticalFeedback.map((item) => (
+                      <div key={item.key} className={`border p-4 rounded-xl space-y-3 transition hover:border-slate-700/80 ${item.borderClass}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="text-[9px] text-slate-400 uppercase tracking-widest font-mono font-bold block truncate">{item.subject}</span>
+                            <span className="text-xs font-extrabold text-slate-100 block mt-0.5 truncate">{item.topic}</span>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold shrink-0 ${item.badgeClass}`}>
+                            {item.pct}% de Acertos ({item.correct}/{item.attempted})
+                          </span>
+                        </div>
+                        
+                        <div className="border-t border-slate-800/40 pt-2.5 space-y-1">
+                          <span className={`text-[10px] font-black uppercase tracking-wider block ${item.textClass}`}>
+                            {item.titleFeedback}
+                          </span>
+                          <p className="text-[11px] text-slate-300 leading-relaxed font-sans">
+                            {item.descriptionFeedback}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
           </div>
+
+          {/* 5. SIDE PRODUCTS (Consistency & Diagnostics) */}
+          {!isViewingAsAdmin && <ConsistencyWidget currentUser={currentUser} />}
+
+          <SmartDiagnostic 
+            studentId={targetStudentId} 
+            studentName={isViewingAsAdmin ? "do Aluno" : currentUser.name} 
+          />
 
         </div>
 

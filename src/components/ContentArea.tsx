@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from "react";
-import { ContentItem, User } from "../types";
-import { BookOpen, Video, FileText, ExternalLink, Plus, Edit2, Trash2, Tag, ShieldCheck, AlertCircle, ClipboardList, Maximize2, Minimize2, Download } from "lucide-react";
+import { ContentItem, User, StudyModule } from "../types";
+import { BookOpen, Video, FileText, ExternalLink, Plus, Edit2, Trash2, Tag, ShieldCheck, AlertCircle, ClipboardList, Maximize2, Minimize2, Download, Check, ChevronDown, ChevronRight, FolderPlus, Folder, FolderOpen, Settings } from "lucide-react";
 import { 
   fetchSharedContentFromFirestore, 
   saveContentItemToFirestore, 
-  deleteContentItemFromFirestore 
+  deleteContentItemFromFirestore,
+  fetchModulesFromFirestore,
+  saveModuleToFirestore,
+  deleteModuleFromFirestore
 } from "../lib/firebase";
 
 interface ContentAreaProps {
@@ -25,6 +28,48 @@ export default function ContentArea({
   const [selectedTopicFilter, setSelectedTopicFilter] = useState<string>("todos");
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
   const [selectedReadingItem, setSelectedReadingItem] = useState<ContentItem | null>(null);
+
+  const [completedLessons, setCompletedLessons] = useState<string[]>([]);
+  const [activeItem, setActiveItem] = useState<ContentItem | null>(null);
+  const [expandedModules, setExpandedModules] = useState<{ [moduleName: string]: boolean }>({});
+  const [expandedSubtopics, setExpandedSubtopics] = useState<{ [subtopicKey: string]: boolean }>({});
+
+  const toggleSubtopic = (topicName: string, subtopicName: string) => {
+    const key = `${topicName}::${subtopicName}`;
+    setExpandedSubtopics(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  useEffect(() => {
+    const saved = localStorage.getItem("completed_lessons");
+    if (saved) {
+      try {
+        setCompletedLessons(JSON.parse(saved));
+      } catch (e) {
+        // ignore
+      }
+    }
+  }, []);
+
+  const toggleLessonCompletion = (id: string) => {
+    let updated;
+    if (completedLessons.includes(id)) {
+      updated = completedLessons.filter(l => l !== id);
+    } else {
+      updated = [...completedLessons, id];
+    }
+    setCompletedLessons(updated);
+    localStorage.setItem("completed_lessons", JSON.stringify(updated));
+  };
+
+  const toggleModule = (moduleName: string) => {
+    setExpandedModules(prev => ({
+      ...prev,
+      [moduleName]: !prev[moduleName]
+    }));
+  };
 
   const getYouTubeEmbedUrl = (videoUrl: string) => {
     try {
@@ -51,6 +96,14 @@ export default function ContentArea({
   const [subtopic, setSubtopic] = useState<string>("");
   const [additionalPdfs, setAdditionalPdfs] = useState<{ name: string; url: string }[]>([]);
 
+  // States for modules
+  const [modules, setModules] = useState<StudyModule[]>([]);
+  const [isManagingModules, setIsManagingModules] = useState<boolean>(false);
+  const [newModuleName, setNewModuleName] = useState<string>("");
+  const [newModuleDesc, setNewModuleDesc] = useState<string>("");
+  const [editingModuleId, setEditingModuleId] = useState<string | null>(null);
+  const [inlineNewModuleName, setInlineNewModuleName] = useState<string>("");
+
   // Load content
   useEffect(() => {
     const loadContent = async () => {
@@ -63,12 +116,51 @@ export default function ContentArea({
         }
       }
 
+      const savedModules = localStorage.getItem("study_modules");
+      if (savedModules) {
+        try {
+          setModules(JSON.parse(savedModules));
+        } catch (e) {
+          setModules([]);
+        }
+      }
+
       try {
-        const fsContent = await fetchSharedContentFromFirestore();
+        const [fsContent, fsModules] = await Promise.all([
+          fetchSharedContentFromFirestore(),
+          fetchModulesFromFirestore()
+        ]);
+
+        let finalModules = fsModules;
+
+        // Auto-seed modules if empty but existing content items have topics
+        if (fsModules.length === 0 && fsContent.length > 0) {
+          const uniqueTopics = Array.from(new Set(fsContent.map(item => item.topic?.trim() || "Geral / Outros").filter(Boolean)));
+          const seeded: StudyModule[] = [];
+          for (const t of uniqueTopics) {
+            const newM: StudyModule = {
+              id: "module_" + Math.random().toString(36).substring(2, 9) + "_" + Date.now(),
+              name: t,
+              description: "Módulo gerado automaticamente a partir dos tópicos existentes.",
+              createdAt: new Date().toISOString()
+            };
+            try {
+              await saveModuleToFirestore(newM);
+              seeded.push(newM);
+            } catch (err) {
+              console.error("Error saving auto-seeded module:", err);
+            }
+          }
+          finalModules = seeded;
+        }
+
         if (fsContent.length > 0) {
           setItems(fsContent);
           localStorage.setItem("shared_content", JSON.stringify(fsContent));
         }
+
+        setModules(finalModules);
+        localStorage.setItem("study_modules", JSON.stringify(finalModules));
       } catch (err) {
         console.error("Error loading content from Firestore:", err);
       }
@@ -92,6 +184,7 @@ export default function ContentArea({
     setCategory("both");
     setTopic("");
     setSubtopic("");
+    setInlineNewModuleName("");
     setAdditionalPdfs([]);
   };
 
@@ -105,7 +198,87 @@ export default function ContentArea({
     setCategory(item.category);
     setTopic(item.topic || "");
     setSubtopic(item.subtopic || "");
+    setInlineNewModuleName("");
     setAdditionalPdfs(item.additionalPdfs || []);
+  };
+
+  const handleSaveModule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newModuleName.trim()) return;
+
+    const nameTrimmed = newModuleName.trim();
+
+    if (editingModuleId) {
+      // Edit
+      const updated = modules.map((m) => {
+        if (m.id === editingModuleId) {
+          return { ...m, name: nameTrimmed, description: newModuleDesc.trim() || undefined };
+        }
+        return m;
+      });
+      setModules(updated);
+      localStorage.setItem("study_modules", JSON.stringify(updated));
+
+      const updatedMod = updated.find((m) => m.id === editingModuleId);
+      if (updatedMod) {
+        try {
+          await saveModuleToFirestore(updatedMod);
+        } catch (err) {
+          console.error("Error updating module in Firestore:", err);
+        }
+      }
+      setEditingModuleId(null);
+    } else {
+      // Create
+      const newMod: StudyModule = {
+        id: "module_" + Date.now(),
+        name: nameTrimmed,
+        description: newModuleDesc.trim() || undefined,
+        createdAt: new Date().toISOString()
+      };
+      const updated = [...modules, newMod];
+      setModules(updated);
+      localStorage.setItem("study_modules", JSON.stringify(updated));
+      try {
+        await saveModuleToFirestore(newMod);
+      } catch (err) {
+        console.error("Error saving new module in Firestore:", err);
+      }
+    }
+
+    setNewModuleName("");
+    setNewModuleDesc("");
+  };
+
+  const handleDeleteModule = async (moduleId: string) => {
+    const modToDelete = modules.find((m) => m.id === moduleId);
+    if (!modToDelete) return;
+    
+    if (window.confirm(`Tem certeza que deseja excluir o módulo "${modToDelete.name}"? Os materiais dentro deste módulo não serão excluídos, mas serão movidos para "Geral / Outros".`)) {
+      // 1. Update modules list
+      const updatedModules = modules.filter((m) => m.id !== moduleId);
+      setModules(updatedModules);
+      localStorage.setItem("study_modules", JSON.stringify(updatedModules));
+
+      // 2. Update local items that were in this module
+      const updatedItems = items.map((item) => {
+        if (item.topic === modToDelete.name) {
+          const updatedItem = { ...item, topic: "Geral / Outros" };
+          saveContentItemToFirestore(updatedItem).catch(console.error);
+          return updatedItem;
+        }
+        return item;
+      });
+      setItems(updatedItems);
+      localStorage.setItem("shared_content", JSON.stringify(updatedItems));
+
+      // 3. Delete from Firestore
+      try {
+        await deleteModuleFromFirestore(moduleId);
+      } catch (err) {
+        console.error("Error deleting module from Firestore:", err);
+      }
+    }
   };
 
   const handleSaveContent = async (e: React.FormEvent) => {
@@ -115,7 +288,30 @@ export default function ContentArea({
     const finalTitle = title.trim() || "Material Complementar";
     const finalSubtitle = subtitle.trim() || "Material complementar e de suporte ao cronograma de estudos.";
     const finalUrl = url.trim() || "";
-    const finalTopic = topic.trim() || "Geral / Outros";
+    
+    let finalTopic = topic.trim() || "Geral / Outros";
+    if (finalTopic === "NEW_MODULE" && inlineNewModuleName.trim()) {
+      finalTopic = inlineNewModuleName.trim();
+    }
+
+    // Check if we need to auto-create this module
+    const exists = modules.some(m => m.name.toLowerCase() === finalTopic.toLowerCase());
+    if (!exists && finalTopic !== "Geral / Outros" && finalTopic !== "") {
+      const newM: StudyModule = {
+        id: "module_" + Math.random().toString(36).substring(2, 9) + "_" + Date.now(),
+        name: finalTopic,
+        description: "Módulo criado dinamicamente ao adicionar material.",
+        createdAt: new Date().toISOString()
+      };
+      try {
+        await saveModuleToFirestore(newM);
+        const updatedMods = [...modules, newM];
+        setModules(updatedMods);
+        localStorage.setItem("study_modules", JSON.stringify(updatedMods));
+      } catch (err) {
+        console.error("Error creating module on-the-fly:", err);
+      }
+    }
 
     const filteredPdfs = type === "pdf" 
       ? additionalPdfs.filter(p => p.name.trim() && p.url.trim()) 
@@ -180,6 +376,7 @@ export default function ContentArea({
     setUrl("");
     setTopic("");
     setSubtopic("");
+    setInlineNewModuleName("");
     setAdditionalPdfs([]);
   };
 
@@ -216,8 +413,15 @@ export default function ContentArea({
 
   // Get available unique topics
   const availableTopics = (Array.from(
-    new Set(filteredItems.map((item) => item.topic?.trim() || "Geral / Outros"))
-  ).filter(Boolean) as string[]).sort((a, b) => {
+    new Set([
+      ...modules.map(m => m.name.trim()),
+      ...filteredItems.map((item) => item.topic?.trim() || "Geral / Outros")
+    ])
+  ).filter((topicName) => {
+    if (!topicName) return false;
+    if (currentUser.isAdmin) return true;
+    return filteredItems.some(item => (item.topic?.trim() || "Geral / Outros") === topicName);
+  }) as string[]).sort((a, b) => {
     if (a === "Geral / Outros") return 1;
     if (b === "Geral / Outros") return -1;
     return a.localeCompare(b);
@@ -238,12 +442,47 @@ export default function ContentArea({
     groupedItems[topicName].push(item);
   });
 
-  // Sorted list of topics to render
-  const sortedTopics = Object.keys(groupedItems).sort((a, b) => {
+  // Sorted list of topics to render (including empty custom modules for admins, and populated modules for students)
+  const sortedTopics = Array.from(new Set([
+    ...modules.map(m => m.name.trim()),
+    ...Object.keys(groupedItems)
+  ])).filter(topicName => {
+    if (!topicName) return false;
+    if (currentUser.isAdmin) return true; // admin sees empty modules too
+    return groupedItems[topicName] && groupedItems[topicName].length > 0; // students only see populated modules
+  }).sort((a, b) => {
     if (a === "Geral / Outros") return 1;
     if (b === "Geral / Outros") return -1;
     return a.localeCompare(b);
   });
+
+  // Automatically select the first class of the active filtered items when the filter or items change
+  useEffect(() => {
+    if (itemsToDisplay.length > 0) {
+      const exists = itemsToDisplay.some(i => i.id === activeItem?.id);
+      if (!exists) {
+        setActiveItem(itemsToDisplay[0]);
+      }
+    } else {
+      setActiveItem(null);
+    }
+  }, [selectedTopicFilter, items]);
+
+  // Expand the first module automatically when modules load
+  useEffect(() => {
+    if (sortedTopics.length > 0) {
+      setExpandedModules(prev => {
+        if (Object.keys(prev).length === 0) {
+          const initial: { [key: string]: boolean } = {};
+          sortedTopics.forEach((topic, idx) => {
+            initial[topic] = idx === 0;
+          });
+          return initial;
+        }
+        return prev;
+      });
+    }
+  }, [sortedTopics]);
 
   return (
     <div id="content-area-component" className="space-y-6">
@@ -274,15 +513,159 @@ export default function ContentArea({
 
         {/* Admin actions */}
         {currentUser.isAdmin && (
-          <button
-            onClick={handleOpenAdd}
-            className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-bold text-xs flex items-center gap-2 transition cursor-pointer shadow-md self-start md:self-auto uppercase tracking-wider"
-          >
-            <Plus className="w-4 h-4" />
-            {onlySimulados ? "Cadastrar Simulado" : "Adicionar Material"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {!onlySimulados && (
+              <button
+                onClick={() => setIsManagingModules(!isManagingModules)}
+                className={`px-5 py-2.5 rounded-xl border font-bold text-xs flex items-center gap-2 transition cursor-pointer shadow-md self-start md:self-auto uppercase tracking-wider ${
+                  isManagingModules
+                    ? "bg-amber-400/10 border-amber-400 text-amber-400 hover:bg-amber-400/20"
+                    : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-900"
+                }`}
+              >
+                <Folder className="w-4 h-4" />
+                {isManagingModules ? "Ver Materiais" : "Gerenciar Módulos"}
+              </button>
+            )}
+            <button
+              onClick={handleOpenAdd}
+              className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-bold text-xs flex items-center gap-2 transition cursor-pointer shadow-md self-start md:self-auto uppercase tracking-wider"
+            >
+              <Plus className="w-4 h-4" />
+              {onlySimulados ? "Cadastrar Simulado" : "Adicionar Material"}
+            </button>
+          </div>
         )}
       </div>
+
+      {/* Admin Module Manager View */}
+      {isManagingModules && currentUser.isAdmin && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-xl max-w-2xl mx-auto space-y-6">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2 text-amber-400">
+              <Folder className="w-5 h-5" />
+              <h3 className="font-bold text-sm uppercase tracking-wider">
+                Painel de Controle: Módulos do Curso
+              </h3>
+            </div>
+            <button
+              onClick={() => {
+                setEditingModuleId(null);
+                setNewModuleName("");
+                setNewModuleDesc("");
+              }}
+              className="text-xs text-slate-400 hover:text-white cursor-pointer"
+            >
+              Limpar Campos
+            </button>
+          </div>
+
+          {/* Create/Edit Module Form */}
+          <form onSubmit={handleSaveModule} className="bg-slate-950 border border-slate-850 p-4 rounded-xl space-y-4">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400">
+              {editingModuleId ? "✏️ Editar Módulo Existente" : "🆕 Criar Novo Módulo de Aula"}
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Nome do Módulo</label>
+                <input
+                  type="text"
+                  value={newModuleName}
+                  onChange={(e) => setNewModuleName(e.target.value)}
+                  placeholder="Ex: Língua Portuguesa"
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400 font-bold"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Breve Descrição</label>
+                <input
+                  type="text"
+                  value={newModuleDesc}
+                  onChange={(e) => setNewModuleDesc(e.target.value)}
+                  placeholder="Ex: Aulas completas foca na banca da PMBA."
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              {editingModuleId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingModuleId(null);
+                    setNewModuleName("");
+                    setNewModuleDesc("");
+                  }}
+                  className="px-4 py-1.5 rounded-lg border border-slate-800 text-slate-300 hover:bg-slate-900 text-xs font-semibold cursor-pointer"
+                >
+                  Cancelar Edição
+                </button>
+              )}
+              <button
+                type="submit"
+                className="px-5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-bold cursor-pointer"
+              >
+                {editingModuleId ? "Salvar Alterações" : "Criar Módulo"}
+              </button>
+            </div>
+          </form>
+
+          {/* List of existing modules */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Módulos Ativos ({modules.length})
+            </h4>
+            {modules.length === 0 ? (
+              <p className="text-sm text-slate-500 italic">Nenhum módulo criado ainda. Crie um acima!</p>
+            ) : (
+              <div className="max-h-72 overflow-y-auto space-y-2 border border-slate-800/60 rounded-xl p-2 bg-slate-950/40">
+                {modules.map((m) => {
+                  const contentCount = items.filter(i => i.topic === m.name).length;
+                  return (
+                    <div
+                      key={m.id}
+                      className="flex items-center justify-between p-3 bg-slate-950 border border-slate-850 rounded-lg hover:border-slate-800 transition"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-slate-200">{m.name}</span>
+                          <span className="text-[10px] bg-slate-850 text-slate-400 px-2 py-0.5 rounded-full font-mono">
+                            {contentCount} {contentCount === 1 ? "aula/PDF" : "aulas/PDFs"}
+                          </span>
+                        </div>
+                        {m.description && (
+                          <p className="text-xs text-slate-400 mt-1">{m.description}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            setEditingModuleId(m.id);
+                            setNewModuleName(m.name);
+                            setNewModuleDesc(m.description || "");
+                          }}
+                          className="p-1.5 rounded bg-slate-900 hover:bg-slate-850 text-amber-400 cursor-pointer transition border border-slate-800"
+                          title="Editar"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteModule(m.id)}
+                          className="p-1.5 rounded bg-slate-900 hover:bg-red-950/50 text-red-400 hover:text-red-300 cursor-pointer transition border border-slate-800 hover:border-red-900"
+                          title="Excluir"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Admin Creator/Editor Form */}
       {isEditing && currentUser.isAdmin && (
@@ -319,14 +702,29 @@ export default function ContentArea({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Tópico (Edital / Matéria)</label>
-                <input
-                  type="text"
+                <label className="block text-xs text-slate-400 mb-1">Módulo / Matéria</label>
+                <select
                   value={topic}
                   onChange={(e) => setTopic(e.target.value)}
-                  placeholder="Ex: Direito Penal, Língua Portuguesa"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400"
-                />
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-amber-400 font-medium"
+                >
+                  <option value="">-- Selecione um Módulo --</option>
+                  {modules.map((m) => (
+                    <option key={m.id} value={m.name}>
+                      {m.name}
+                    </option>
+                  ))}
+                  <option value="NEW_MODULE">+ Criar Novo Módulo...</option>
+                </select>
+                {topic === "NEW_MODULE" && (
+                  <input
+                    type="text"
+                    value={inlineNewModuleName}
+                    onChange={(e) => setInlineNewModuleName(e.target.value)}
+                    placeholder="Nome do Novo Módulo"
+                    className="w-full bg-slate-950 border border-amber-500/50 rounded-lg px-3 py-2 mt-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-400"
+                  />
+                )}
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Subtópico (Assunto Específico)</label>
@@ -508,383 +906,582 @@ export default function ContentArea({
         </div>
       )}
 
-      {/* Grouped Lists of Materials */}
-      <div className="space-y-10">
-        {(() => {
-          // Define card render utility
-          const renderContentCard = (item: ContentItem) => {
-            const embedUrl = item.type === "video" ? getYouTubeEmbedUrl(item.url) : null;
-            const isPlaying = playingVideoId === item.id && embedUrl;
+      {/* Kiwify Course Player Layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        
+        {/* SIDEBAR: Modules & Progress (lg:col-span-4) */}
+        <div className="lg:col-span-4 space-y-4">
+          
+          {/* Progress Widget */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white shadow-md">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] uppercase font-bold text-slate-400 tracking-wider">Seu Progresso</span>
+              <span className="text-xs font-mono font-extrabold text-amber-400">
+                {(() => {
+                  const completedCount = completedLessons.filter(id => filteredItems.some(i => i.id === id)).length;
+                  const totalCount = filteredItems.length;
+                  const pct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+                  return `${pct}% (${completedCount}/${totalCount})`;
+                })()}
+              </span>
+            </div>
+            <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden border border-slate-850">
+              <div 
+                className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                style={{ 
+                  width: `${(() => {
+                    const completedCount = completedLessons.filter(id => filteredItems.some(i => i.id === id)).length;
+                    const totalCount = filteredItems.length;
+                    return totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+                  })()}%` 
+                }}
+              />
+            </div>
+          </div>
 
-            return (
-              <div
-                key={item.id}
-                className="bg-slate-900 border border-slate-800/80 rounded-2xl p-5 text-white flex flex-col justify-between hover:border-slate-700 hover:shadow-lg transition relative overflow-hidden group min-h-[220px]"
-              >
-                {/* Inline absolute confirmation overlay when deleting */}
-                {deleteConfirmId === item.id && (
-                  <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-5 text-center z-20 transition-all">
-                    <AlertCircle className="w-8 h-8 text-rose-500 mb-2 animate-bounce" />
-                    <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wide">Excluir este Material?</h4>
-                    <p className="text-[11px] text-slate-400 leading-normal max-w-xs mt-1 mb-4">
-                      Tem certeza que deseja excluir "<strong>{item.title}</strong>"? Esta ação não poderá ser desfeita.
-                    </p>
-                    <div className="flex items-center justify-center gap-3">
+          {/* Module Navigation List */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
+            <div className="p-4 border-b border-slate-800 bg-slate-950/20">
+              <h3 className="font-extrabold text-xs text-slate-300 uppercase tracking-widest flex items-center gap-1.5">
+                <BookOpen className="w-4 h-4 text-amber-400" />
+                Módulos do Curso
+              </h3>
+            </div>
+
+            <div className="divide-y divide-slate-800 max-h-[600px] overflow-y-auto">
+              {sortedTopics.length === 0 ? (
+                <div className="p-8 text-center text-slate-500 text-xs">
+                  Nenhum módulo disponível para sua categoria no momento.
+                </div>
+              ) : (
+                sortedTopics.map((topicName) => {
+                  const topicItems = groupedItems[topicName];
+                  const isExpanded = !!expandedModules[topicName];
+                  const topicCompletedCount = topicItems.filter(item => completedLessons.includes(item.id)).length;
+                  const topicProgressPct = topicItems.length > 0 ? Math.round((topicCompletedCount / topicItems.length) * 100) : 0;
+
+                  return (
+                    <div key={topicName} className="bg-slate-900/50">
+                      {/* Module Header Row */}
                       <button
-                        type="button"
-                        onClick={() => setDeleteConfirmId(null)}
-                        className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold cursor-pointer transition"
+                        onClick={() => toggleModule(topicName)}
+                        className="w-full text-left p-4 hover:bg-slate-850/40 flex items-center justify-between transition cursor-pointer"
                       >
-                        Cancelar
+                        <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                          <div className={`p-1.5 rounded-lg shrink-0 ${topicProgressPct === 100 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-400/10 text-amber-400'}`}>
+                            <BookOpen className="w-3.5 h-3.5" />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="font-black text-xs text-slate-200 block truncate uppercase tracking-wider">{topicName}</span>
+                            <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
+                              {topicCompletedCount}/{topicItems.length} concluídas • {topicProgressPct}%
+                            </span>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-slate-400 hover:text-white transition">
+                          {isExpanded ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        </div>
                       </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const updated = items.filter((i) => i.id !== item.id);
-                          saveItems(updated);
-                          setDeleteConfirmId(null);
-                          try {
-                            await deleteContentItemFromFirestore(item.id);
-                          } catch (err) {
-                            console.error("Error deleting content item from Firestore:", err);
-                          }
-                        }}
-                        className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-black cursor-pointer transition shadow-md shadow-rose-950"
-                      >
-                        Confirmar Exclusão
-                      </button>
+
+                      {/* Lesson List inside Module */}
+                      {isExpanded && (
+                        <div className="bg-slate-950/40 border-t border-slate-900 pb-1 text-slate-300">
+                          {(() => {
+                            // Split items into standalone (no subtopic) and grouped by subtopic
+                            const subtopicsMap: { [subtopicName: string]: ContentItem[] } = {};
+                            const standaloneItems: ContentItem[] = [];
+
+                            topicItems.forEach(item => {
+                              const sub = item.subtopic?.trim();
+                              if (sub) {
+                                if (!subtopicsMap[sub]) {
+                                  subtopicsMap[sub] = [];
+                                }
+                                subtopicsMap[sub].push(item);
+                              } else {
+                                standaloneItems.push(item);
+                              }
+                            });
+
+                            const sortedSubtopics = Object.keys(subtopicsMap).sort((a, b) => a.localeCompare(b));
+
+                            const renderLessonRow = (item: ContentItem, isNested: boolean) => {
+                              const isCompleted = completedLessons.includes(item.id);
+                              const isActive = activeItem?.id === item.id;
+
+                              return (
+                                <div 
+                                  key={item.id}
+                                  className={`group/lesson flex items-start justify-between py-3 pr-3.5 border-l-4 transition-all duration-150 ${
+                                    isNested ? "pl-7" : "pl-3.5"
+                                  } ${
+                                    isActive 
+                                      ? "bg-amber-400/5 border-amber-400 text-amber-400 font-extrabold" 
+                                      : "border-transparent text-slate-300 hover:bg-slate-900/30 hover:text-white"
+                                  }`}
+                                >
+                                  {/* Checkbox & Lesson Meta */}
+                                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                                    {/* Completion Round Toggle Checkbox */}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        toggleLessonCompletion(item.id);
+                                      }}
+                                      className={`mt-0.5 p-0.5 rounded-full transition-all duration-150 cursor-pointer shrink-0 ${
+                                        isCompleted 
+                                          ? "bg-emerald-500 text-slate-950 font-black scale-105" 
+                                          : "bg-slate-800 text-slate-500 hover:bg-slate-700 hover:text-slate-300"
+                                      }`}
+                                      title={isCompleted ? "Marcar como não concluído" : "Marcar como concluído"}
+                                    >
+                                      <Check className="w-3 h-3" />
+                                    </button>
+
+                                    {/* Clickable Lesson Detail Triggers */}
+                                    <button
+                                      onClick={() => setActiveItem(item)}
+                                      className="text-left min-w-0 flex-1 cursor-pointer"
+                                    >
+                                      <div className="flex items-center gap-1.5">
+                                        {/* Type icon on item */}
+                                        {item.type === "video" && <Video className="w-3.5 h-3.5 text-red-400 shrink-0" />}
+                                        {item.type === "pdf" && <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                                        {item.type === "simulado" && <ClipboardList className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                                        {item.type === "link" && <ExternalLink className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                                        <span className="text-[9px] font-bold font-mono uppercase tracking-widest text-slate-500 shrink-0">
+                                          {item.type === "video" ? "AULA" : item.type === "pdf" ? "PDF" : item.type === "simulado" ? "TESTE" : "LINK"}
+                                        </span>
+                                      </div>
+                                      <span className={`text-xs block mt-1 leading-snug transition-colors truncate ${isActive ? "text-amber-400 font-extrabold" : "text-slate-200 group-hover/lesson:text-amber-400"}`}>
+                                        {item.title}
+                                      </span>
+                                    </button>
+                                  </div>
+
+                                  {/* Admin Context Actions inside list */}
+                                  {currentUser.isAdmin && (
+                                    <div className="flex items-center gap-1 opacity-0 group-hover/lesson:opacity-100 transition shrink-0 pl-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEdit(item)}
+                                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-amber-400 transition cursor-pointer"
+                                        title="Editar"
+                                      >
+                                        <Edit2 className="w-3 h-3" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteContent(item.id)}
+                                        className="p-1 rounded hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                                        title="Excluir"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            };
+
+                            return (
+                              <div className="divide-y divide-slate-900/40">
+                                {/* Standalone items under this module first */}
+                                {standaloneItems.length > 0 && (
+                                  <div className="py-1">
+                                    {standaloneItems.map(item => renderLessonRow(item, false))}
+                                  </div>
+                                )}
+
+                                {/* Subtopic folders */}
+                                {sortedSubtopics.map(subName => {
+                                  const subItems = subtopicsMap[subName];
+                                  const subKey = `${topicName}::${subName}`;
+                                  const isSubExpanded = expandedSubtopics[subKey] !== false; // true (expanded) by default
+                                  const subCompletedCount = subItems.filter(item => completedLessons.includes(item.id)).length;
+                                  const subPct = subItems.length > 0 ? Math.round((subCompletedCount / subItems.length) * 100) : 0;
+
+                                  return (
+                                    <div key={subName} className="bg-slate-950/20 border-b border-slate-900/60 last:border-0">
+                                      {/* Folder header */}
+                                      <button
+                                        onClick={() => toggleSubtopic(topicName, subName)}
+                                        className="w-full text-left px-4 py-2.5 hover:bg-slate-900/40 flex items-center justify-between transition cursor-pointer border-b border-slate-900/20"
+                                      >
+                                        <div className="flex items-center gap-2 min-w-0 pr-2">
+                                          {isSubExpanded ? (
+                                            <FolderOpen className="w-4 h-4 text-amber-500/80 shrink-0" />
+                                          ) : (
+                                            <Folder className="w-4 h-4 text-amber-500/80 shrink-0" />
+                                          )}
+                                          <div className="min-w-0">
+                                            <span className="font-bold text-[11px] text-slate-300 block truncate uppercase tracking-wider">
+                                              {subName}
+                                            </span>
+                                            <span className="text-[9px] text-slate-400 block mt-0.5 font-mono">
+                                              {subCompletedCount}/{subItems.length} concluídas • {subPct}%
+                                            </span>
+                                          </div>
+                                        </div>
+                                        <div className="text-slate-500 hover:text-slate-300 transition shrink-0">
+                                          {isSubExpanded ? (
+                                            <ChevronDown className="w-3.5 h-3.5" />
+                                          ) : (
+                                            <ChevronRight className="w-3.5 h-3.5" />
+                                          )}
+                                        </div>
+                                      </button>
+
+                                      {/* Folder items list */}
+                                      {isSubExpanded && (
+                                        <div className="bg-slate-950/40 border-l border-amber-400/20 ml-5 py-1 animate-fade-in divide-y divide-slate-900/20">
+                                          {subItems.map(item => renderLessonRow(item, true))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+
+                                {standaloneItems.length === 0 && sortedSubtopics.length === 0 && (
+                                  <div className="p-4 text-center text-slate-600 text-xs italic">
+                                    Nenhum material neste módulo ainda.
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* STAGE: Active Lesson detail Workspace (lg:col-span-8) */}
+        <div className="lg:col-span-8 space-y-6">
+          {activeItem ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 text-white shadow-2xl space-y-6 min-h-[550px] relative">
+              
+              {/* Inline delete confirmation overlay for the active material */}
+              {deleteConfirmId === activeItem.id && (
+                <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-5 text-center z-20 transition-all rounded-3xl">
+                  <AlertCircle className="w-8 h-8 text-rose-500 mb-2 animate-bounce" />
+                  <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wide">Excluir este Material?</h4>
+                  <p className="text-[11px] text-slate-400 leading-normal max-w-xs mt-1 mb-4">
+                    Tem certeza que deseja excluir "<strong>{activeItem.title}</strong>"? Esta ação não poderá ser desfeita.
+                  </p>
+                  <div className="flex items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirmId(null)}
+                      className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold cursor-pointer transition"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const updated = items.filter((i) => i.id !== activeItem.id);
+                        saveItems(updated);
+                        setDeleteConfirmId(null);
+                        setActiveItem(null);
+                        try {
+                          await deleteContentItemFromFirestore(activeItem.id);
+                        } catch (err) {
+                          console.error("Error deleting content item from Firestore:", err);
+                        }
+                      }}
+                      className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-black cursor-pointer transition shadow-md shadow-rose-950"
+                    >
+                      Confirmar Exclusão
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Lesson Metadata Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-amber-500 bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-500/20">
+                      Módulo: {activeItem.topic}
+                    </span>
+                    {activeItem.subtopic && (
+                      <span className="text-[9px] font-black uppercase tracking-widest text-slate-300 bg-slate-950 px-2.5 py-0.5 rounded-full border border-slate-850">
+                        {activeItem.subtopic}
+                      </span>
+                    )}
+                  </div>
+                  <h2 className="text-lg font-black text-slate-100 tracking-tight leading-snug">
+                    {activeItem.title}
+                  </h2>
+                </div>
+
+                {/* Admin Quick Options inside Workspace */}
+                {currentUser.isAdmin && (
+                  <div className="flex items-center gap-2 self-start sm:self-auto">
+                    <button
+                      onClick={() => handleOpenEdit(activeItem)}
+                      className="px-3 py-1.5 bg-slate-950 border border-slate-800 hover:bg-slate-800 hover:text-amber-400 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>Editar Material</span>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteContent(activeItem.id)}
+                      className="px-3 py-1.5 bg-rose-950/20 border border-rose-900/40 text-rose-400 hover:bg-rose-950/40 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Excluir</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* ACTIVE LESSON VIEW STAGE */}
+              <div className="space-y-4">
+                
+                {/* 1. Video Player Container */}
+                {activeItem.type === "video" && (
+                  (() => {
+                    const embedUrl = getYouTubeEmbedUrl(activeItem.url);
+                    if (embedUrl) {
+                      return (
+                        <div className="w-full aspect-video rounded-2xl overflow-hidden border border-slate-800 bg-black shadow-lg">
+                          <iframe
+                            width="100%"
+                            height="100%"
+                            src={embedUrl}
+                            title={activeItem.title}
+                            frameBorder="0"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            allowFullScreen
+                          />
+                        </div>
+                      );
+                    } else {
+                      return (
+                        <div className="bg-slate-950 border border-slate-850 rounded-2xl p-8 text-center space-y-4">
+                          <Video className="w-12 h-12 text-slate-600 mx-auto animate-pulse" />
+                          <div className="max-w-md mx-auto space-y-2">
+                            <h4 className="text-sm font-bold text-slate-200">Vídeo Externo Prontificado</h4>
+                            <p className="text-xs text-slate-400">Esta videoaula está hospedada em uma plataforma externa. Clique no botão abaixo para assistir em tela cheia.</p>
+                          </div>
+                          {activeItem.url ? (
+                            <a
+                              href={activeItem.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs transition shadow-md cursor-pointer"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                              <span>Assistir Aula Externa</span>
+                            </a>
+                          ) : (
+                            <span className="text-xs text-slate-500">Sem link cadastrado para este vídeo.</span>
+                          )}
+                        </div>
+                      );
+                    }
+                  })()
+                )}
+
+                {/* 2. PDF Study Container */}
+                {activeItem.type === "pdf" && (
+                  <div className="bg-slate-950 border border-slate-850 rounded-2xl p-6 text-center space-y-4">
+                    <FileText className="w-12 h-12 text-emerald-400 mx-auto" />
+                    <div className="max-w-md mx-auto space-y-2">
+                      <h4 className="text-sm font-bold text-slate-200">Material de Estudos PDF Esquematizado</h4>
+                      <p className="text-xs text-slate-400">Baixe o PDF principal do resumo elaborado por nossos instrutores ou inicie a leitura focada diretamente na plataforma.</p>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                      {activeItem.contentMarkdown && (
+                        <button
+                          onClick={() => setSelectedReadingItem(activeItem)}
+                          className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs transition shadow-md cursor-pointer"
+                        >
+                          <BookOpen className="w-4 h-4" />
+                          <span>Ler na Plataforma</span>
+                        </button>
+                      )}
+                      
+                      {activeItem.url ? (
+                        <a
+                          href={activeItem.url}
+                          target="_blank"
+                          download
+                          rel="noopener noreferrer"
+                          className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xs transition shadow-md cursor-pointer"
+                        >
+                          <Download className="w-4 h-4 animate-bounce" />
+                          <span>Baixar Resumo PDF</span>
+                        </a>
+                      ) : (
+                        <span className="text-xs text-slate-500">Sem PDF cadastrado</span>
+                      )}
                     </div>
                   </div>
                 )}
 
-                {/* Background gradient decoration */}
-                <div className="absolute top-0 right-0 w-24 h-24 bg-amber-400/5 rounded-full blur-2xl group-hover:bg-amber-400/10 transition-all duration-500 pointer-events-none" />
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between mb-1">
-                    {/* Type icon/badge */}
-                    <div className="flex items-center gap-1.5">
-                      <div className={`p-2 rounded-lg ${
-                        item.type === "video" 
-                          ? "bg-red-500/10 text-red-400" 
-                          : item.type === "pdf" 
-                          ? "bg-emerald-500/10 text-emerald-400" 
-                          : item.type === "simulado"
-                          ? "bg-amber-400/10 text-amber-400 border border-amber-400/20"
-                          : "bg-indigo-500/10 text-indigo-400"
-                      }`}>
-                        {item.type === "video" && <Video className="w-4 h-4" />}
-                        {item.type === "pdf" && <FileText className="w-4 h-4" />}
-                        {item.type === "simulado" && <ClipboardList className="w-4 h-4" />}
-                        {item.type === "link" && <ExternalLink className="w-4 h-4" />}
-                      </div>
-                      <span className="text-[10px] font-bold font-mono uppercase text-slate-400 tracking-wider">
-                        {item.type === "video" && "Vídeoaula"}
-                        {item.type === "pdf" && "Resumo PDF"}
-                        {item.type === "simulado" && "Simulado Prático"}
-                        {item.type === "link" && "Link Externo"}
-                      </span>
+                {/* 3. Simulado Stage */}
+                {activeItem.type === "simulado" && (
+                  <div className="bg-slate-950 border border-slate-850 rounded-2xl p-8 text-center space-y-4">
+                    <ClipboardList className="w-12 h-12 text-amber-500 mx-auto animate-pulse" />
+                    <div className="max-w-md mx-auto space-y-2">
+                      <h4 className="text-sm font-bold text-slate-200">Simulado de Combate Gabaritado</h4>
+                      <p className="text-xs text-slate-400">Este exercício cronometrado irá mensurar seu aproveitamento e reforçar seu vertical de estudos.</p>
                     </div>
-
-                    {/* Target Audience Badge */}
-                    <div className="flex items-center gap-1 bg-slate-950/80 border border-slate-850 px-2.5 py-1 rounded-full text-[9px] font-bold font-mono tracking-wider">
-                      <Tag className="w-2.5 h-2.5 text-amber-400" />
-                      <span className="text-slate-300">
-                        {item.category === "both" && "GERAL"}
-                        {item.category === "cfo" && "CFO PMBA"}
-                        {item.category === "soldado" && "SOLDADO"}
-                      </span>
-                    </div>
+                    {activeItem.url ? (
+                      <a
+                        href={activeItem.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs transition shadow-md cursor-pointer uppercase tracking-wider"
+                      >
+                        <ClipboardList className="w-4 h-4" />
+                        <span>Iniciar Simulado</span>
+                      </a>
+                    ) : (
+                      <span className="text-xs text-slate-500">Simulado sem link cadastrado</span>
+                    )}
                   </div>
+                )}
 
-                  <h3 className="font-extrabold text-sm text-slate-100 leading-snug group-hover:text-amber-400 transition-colors">
-                    {item.title}
-                  </h3>
-                  
-                  {item.subtopic && (
-                    <div className="flex flex-wrap gap-1.5">
-                      <span className="bg-slate-950 border border-slate-850 text-[9px] text-slate-300 font-bold font-mono px-2 py-0.5 rounded-md uppercase tracking-wide shrink-0">
-                        Subtópico: {item.subtopic}
-                      </span>
+                {/* 4. Support Link Stage */}
+                {activeItem.type === "link" && (
+                  <div className="bg-slate-950 border border-slate-850 rounded-2xl p-8 text-center space-y-4">
+                    <ExternalLink className="w-12 h-12 text-indigo-400 mx-auto" />
+                    <div className="max-w-md mx-auto space-y-2">
+                      <h4 className="text-sm font-bold text-slate-200">Hiperlink / Plataforma de Apoio</h4>
+                      <p className="text-xs text-slate-400">Clique no link de redirecionamento abaixo para abrir as fontes externas, leis oficiais secas ou portais de questões complementares.</p>
                     </div>
-                  )}
+                    {activeItem.url ? (
+                      <a
+                        href={activeItem.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs transition shadow-md cursor-pointer"
+                      >
+                        <span>Acessar Link Externo</span>
+                        <ExternalLink className="w-4 h-4" />
+                      </a>
+                    ) : (
+                      <span className="text-xs text-slate-500">Link indisponível</span>
+                    )}
+                  </div>
+                )}
 
-                  {/* Integrated YouTube Player directly on card */}
-                  {isPlaying ? (
-                    <div className="w-full aspect-video rounded-xl overflow-hidden border border-slate-800 bg-black mt-2">
-                      <iframe
-                        width="100%"
-                        height="100%"
-                        src={embedUrl}
-                        title={item.title}
-                        frameBorder="0"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                        allowFullScreen
-                      />
-                    </div>
-                  ) : (
-                    <p className="text-slate-400 text-xs leading-relaxed line-clamp-3">
-                      {item.subtitle}
-                    </p>
-                  )}
+              </div>
 
-                  {/* ADDITIONAL PDFs (DOWNLOAD DIRECTLY FROM THE PLATFORM) */}
-                  {item.type === "pdf" && item.additionalPdfs && item.additionalPdfs.length > 0 && (
-                    <div className="mt-3 p-2.5 rounded-xl bg-slate-950 border border-slate-850/80 space-y-2">
-                      <p className="text-[9px] font-extrabold uppercase text-slate-400 tracking-wider flex items-center gap-1">
-                        <FileText className="w-3 h-3 text-emerald-400 animate-pulse" />
-                        PDFs de Suporte / Anexos ({item.additionalPdfs.length}):
-                      </p>
-                      <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                        {item.additionalPdfs.map((pdf, idx) => (
-                          <a
-                            key={idx}
-                            href={pdf.url}
-                            target="_blank"
-                            download
-                            rel="noopener noreferrer"
-                            className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-850 hover:border-emerald-500/30 hover:bg-slate-850/40 transition text-[11px] text-slate-300 group/pdf cursor-pointer"
-                          >
-                            <span className="truncate max-w-[160px] font-bold text-slate-300 group-hover/pdf:text-amber-400 transition-colors">
-                              {pdf.name || `PDF Anexo #${idx + 1}`}
-                            </span>
-                            <span className="shrink-0 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded text-[8px] font-black tracking-wider flex items-center gap-1 group-hover/pdf:bg-emerald-500 group-hover/pdf:text-slate-950 transition">
-                              <Download className="w-2.5 h-2.5" />
-                              BAIXAR
-                            </span>
-                          </a>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+              {/* CLASS CONTROL BAR: CONCLUIR & NAVIGATE */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800 pt-5">
+                
+                {/* Mark Completed Button */}
+                <button
+                  onClick={() => toggleLessonCompletion(activeItem.id)}
+                  className={`w-full sm:w-auto px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-wider transition cursor-pointer flex items-center justify-center gap-2 shadow-md ${
+                    completedLessons.includes(activeItem.id)
+                      ? "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30"
+                      : "bg-emerald-500 hover:bg-emerald-600 text-slate-950"
+                  }`}
+                >
+                  <Check className="w-4.5 h-4.5" />
+                  <span>
+                    {completedLessons.includes(activeItem.id) ? "Concluída ✓" : "Concluir Aula"}
+                  </span>
+                </button>
+
+                {/* Prev / Next Buttons */}
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  {(() => {
+                    const flatList = filteredItems;
+                    const curIdx = flatList.findIndex(i => i.id === activeItem.id);
+                    
+                    return (
+                      <>
+                        <button
+                          disabled={curIdx <= 0}
+                          onClick={() => {
+                            if (curIdx > 0) setActiveItem(flatList[curIdx - 1]);
+                          }}
+                          className="flex-1 sm:flex-initial px-4 py-3 bg-slate-950 hover:bg-slate-850 text-slate-300 text-xs font-black rounded-xl transition border border-slate-850 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+                        >
+                          Anterior
+                        </button>
+                        <button
+                          disabled={curIdx === -1 || curIdx >= flatList.length - 1}
+                          onClick={() => {
+                            if (curIdx < flatList.length - 1) setActiveItem(flatList[curIdx + 1]);
+                          }}
+                          className="flex-1 sm:flex-initial px-4 py-3 bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black rounded-xl transition disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+                        >
+                          Próxima Aula
+                        </button>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* LESSON DESCRIPTION & MATERIALS SUPPORT CARD */}
+              <div className="space-y-4 pt-4 border-t border-slate-800/40">
+                <div className="bg-slate-950/40 rounded-2xl p-4 border border-slate-850/60 space-y-2">
+                  <h4 className="text-xs font-black uppercase text-amber-400 tracking-wider flex items-center gap-1">
+                    <Tag className="w-3.5 h-3.5" />
+                    Descrição / Diretrizes de Estudos:
+                  </h4>
+                  <p className="text-xs text-slate-300 leading-relaxed font-sans">
+                    {activeItem.subtitle || "Nenhuma anotação adicional disponível para esta aula."}
+                  </p>
                 </div>
 
-                {/* Actions Footer */}
-                <div className="flex items-center justify-between mt-5 border-t border-slate-800/60 pt-4">
-                  <div className="flex items-center gap-3">
-                    {item.contentMarkdown ? (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedReadingItem(item)}
-                        className="px-4 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md shadow-amber-950/20"
-                      >
-                        <BookOpen className="w-3.5 h-3.5" />
-                        <span>Ler Material Estudo</span>
-                      </button>
-                    ) : item.type === "simulado" ? (
-                      item.url ? (
+                {/* ADDITIONAL PDF ATTACHMENTS FOR ACTIVE LESSON */}
+                {activeItem.type === "pdf" && activeItem.additionalPdfs && activeItem.additionalPdfs.length > 0 && (
+                  <div className="bg-slate-950/40 rounded-2xl p-4 border border-slate-850/60 space-y-3">
+                    <h4 className="text-xs font-black uppercase text-emerald-400 tracking-wider flex items-center gap-1">
+                      <FileText className="w-3.5 h-3.5" />
+                      Materiais e PDFs Adicionais de Suporte ({activeItem.additionalPdfs.length}):
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {activeItem.additionalPdfs.map((pdf, idx) => (
                         <a
-                          href={item.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-4 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md shadow-amber-950/20"
-                        >
-                          <ClipboardList className="w-3.5 h-3.5" />
-                          <span>Iniciar Simulado</span>
-                        </a>
-                      ) : (
-                        <span className="text-xs text-slate-500 italic">Sem Link</span>
-                      )
-                    ) : item.type === "pdf" ? (
-                      item.url ? (
-                        <a
-                          href={item.url}
+                          key={idx}
+                          href={pdf.url}
                           target="_blank"
                           download
                           rel="noopener noreferrer"
-                          className="px-4 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md shadow-emerald-950/20"
+                          className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 hover:border-emerald-500/30 hover:bg-slate-850/40 transition text-xs text-slate-300 group/pdf cursor-pointer"
                         >
-                          <Download className="w-3.5 h-3.5 animate-bounce" />
-                          <span>Baixar PDF Principal</span>
-                        </a>
-                      ) : (
-                        <span className="text-xs text-slate-500 italic">Sem Link</span>
-                      )
-                    ) : embedUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => setPlayingVideoId(isPlaying ? null : item.id)}
-                        className="text-xs font-bold text-amber-400 hover:text-amber-500 flex items-center gap-1.5 cursor-pointer"
-                      >
-                        {isPlaying ? (
-                          <>
-                            <span>Fechar Vídeo</span>
-                          </>
-                        ) : (
-                          <>
-                            <Video className="w-3.5 h-3.5 animate-pulse" />
-                            <span>Assistir na Plataforma</span>
-                          </>
-                        )}
-                      </button>
-                    ) : item.url ? (
-                      <a
-                        href={item.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs font-bold text-amber-400 hover:text-amber-500 flex items-center gap-1.5 group/link"
-                      >
-                        <span>Acessar Material</span>
-                        <ExternalLink className="w-3.5 h-3.5 group-hover/link:translate-x-0.5 transition-transform" />
-                      </a>
-                    ) : (
-                      <span className="text-xs text-slate-500 italic">Sem Link</span>
-                    )}
-                  </div>
-
-                  {/* Admin modifications */}
-                  {currentUser.isAdmin && (
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenEdit(item)}
-                        className="p-1.5 rounded bg-slate-950/50 border border-slate-850 hover:bg-slate-800 hover:text-amber-400 transition text-slate-400 cursor-pointer"
-                        title="Editar"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteContent(item.id)}
-                        className="p-1.5 rounded bg-slate-950/50 border border-slate-850 hover:bg-rose-950/40 hover:text-rose-400 hover:border-rose-900/50 transition text-slate-400 cursor-pointer"
-                        title="Excluir"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          };
-
-          return sortedTopics.map((topicName) => {
-            const topicItems = groupedItems[topicName];
-            
-            // Group items inside this topic by subtopic (which represents the specific Assunto / Subject)
-            const groupedBySubtopic: { [subtopicName: string]: ContentItem[] } = {};
-            topicItems.forEach((item) => {
-              const subtopicName = item.subtopic?.trim() || "Geral / Introdução";
-              if (!groupedBySubtopic[subtopicName]) {
-                groupedBySubtopic[subtopicName] = [];
-              }
-              groupedBySubtopic[subtopicName].push(item);
-            });
-
-            // Sort subtopics: Put "Geral" first, then alphabetical
-            const sortedSubtopics = Object.keys(groupedBySubtopic).sort((a, b) => {
-              if (a === "Geral / Introdução" || a === "Geral") return -1;
-              if (b === "Geral / Introdução" || b === "Geral") return 1;
-              return a.localeCompare(b);
-            });
-
-            return (
-              <div key={topicName} className="bg-slate-900/40 border border-slate-850 p-6 rounded-3xl space-y-6">
-                {/* Topic Section Header */}
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                  <div className="flex items-center gap-2">
-                    <BookOpen className="w-5 h-5 text-amber-400 animate-pulse" />
-                    <h3 className="text-sm font-extrabold uppercase tracking-widest text-slate-100">
-                      {topicName}
-                    </h3>
-                  </div>
-                  <span className="text-[10px] font-mono bg-slate-950 text-amber-400 border border-slate-850 px-2.5 py-1 rounded-full font-bold font-mono">
-                    {topicItems.length} {topicItems.length === 1 ? "conteúdo" : "conteúdos"}
-                  </span>
-                </div>
-
-                {/* Sub-groups (Assuntos) separated inside the Topic */}
-                <div className="space-y-8">
-                  {sortedSubtopics.map((subtopicName) => {
-                    const subtopicItems = groupedBySubtopic[subtopicName];
-                    const subtopicVideos = subtopicItems.filter(item => item.type === "video");
-                    const subtopicSimulados = subtopicItems.filter(item => item.type === "simulado");
-                    const subtopicPDFs = subtopicItems.filter(item => item.type === "pdf");
-                    const subtopicLinks = subtopicItems.filter(item => item.type === "link");
-
-                    return (
-                      <div key={subtopicName} className="bg-slate-950/30 border border-slate-850/60 rounded-2xl p-5 space-y-4">
-                        {/* Subtopic / Assunto Header */}
-                        <div className="flex items-center justify-between border-b border-slate-900 pb-2">
-                          <div className="flex items-center gap-2">
-                            <Tag className="w-3.5 h-3.5 text-amber-400" />
-                            <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                              Assunto: <span className="text-amber-400 font-extrabold">{subtopicName}</span>
-                            </h4>
-                          </div>
-                          <span className="text-[9px] font-mono bg-slate-900 text-slate-400 px-2 py-0.5 rounded border border-slate-850">
-                            {subtopicItems.length} {subtopicItems.length === 1 ? "item" : "itens"}
+                          <span className="truncate max-w-[180px] font-bold text-slate-300 group-hover/pdf:text-amber-400 transition-colors">
+                            {pdf.name || `PDF Anexo #${idx + 1}`}
                           </span>
-                        </div>
-
-                        {/* List of separated content types within this Assunto */}
-                        <div className="space-y-5">
-                          {/* Video Lectures */}
-                          {subtopicVideos.length > 0 && (
-                            <div className="space-y-2.5">
-                              <h5 className="text-[10px] font-black uppercase tracking-wider text-amber-500/80 flex items-center gap-1.5 pl-1">
-                                <Video className="w-3.5 h-3.5 text-amber-500" />
-                                Aulas em Vídeo ({subtopicVideos.length})
-                              </h5>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {subtopicVideos.map(renderContentCard)}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Simulados */}
-                          {subtopicSimulados.length > 0 && (
-                            <div className="space-y-2.5">
-                              <h5 className="text-[10px] font-black uppercase tracking-wider text-amber-400 flex items-center gap-1.5 pl-1">
-                                <ClipboardList className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
-                                Simulados Práticos &amp; Questões ({subtopicSimulados.length})
-                              </h5>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {subtopicSimulados.map(renderContentCard)}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* PDF Study Materials */}
-                          {subtopicPDFs.length > 0 && (
-                            <div className="space-y-2.5">
-                              <h5 className="text-[10px] font-black uppercase tracking-wider text-emerald-400/80 flex items-center gap-1.5 pl-1">
-                                <FileText className="w-3.5 h-3.5 text-emerald-400" />
-                                Resumos &amp; PDFs ({subtopicPDFs.length})
-                              </h5>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {subtopicPDFs.map(renderContentCard)}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* External reference links */}
-                          {subtopicLinks.length > 0 && (
-                            <div className="space-y-2.5">
-                              <h5 className="text-[10px] font-black uppercase tracking-wider text-indigo-400/80 flex items-center gap-1.5 pl-1">
-                                <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
-                                Links de Apoio ({subtopicLinks.length})
-                              </h5>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {subtopicLinks.map(renderContentCard)}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                          <span className="shrink-0 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded text-[9px] font-black tracking-wider flex items-center gap-1 group-hover/pdf:bg-emerald-500 group-hover/pdf:text-slate-950 transition">
+                            <Download className="w-3.5 h-3.5" />
+                            BAIXAR
+                          </span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            );
-          });
-        })()}
 
-        {filteredItems.length === 0 && (
-          <div className="text-center py-12 bg-slate-900/50 rounded-2xl border border-slate-800/80">
-            <span className="text-slate-500 text-sm">Nenhum conteúdo publicado para sua categoria no momento.</span>
-          </div>
-        )}
+            </div>
+          ) : (
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-white shadow-2xl flex flex-col items-center justify-center text-center min-h-[550px] space-y-5">
+              <BookOpen className="w-16 h-16 text-slate-700 animate-pulse" />
+              <div className="max-w-md space-y-2">
+                <h3 className="text-lg font-extrabold text-slate-200">Sua Biblioteca de Elite PMBA</h3>
+                <p className="text-xs text-slate-400 leading-relaxed">Selecione um módulo ou aula no menu de navegação lateral para acessar videoaulas exclusivas, resumos completos e simulados táticos.</p>
+              </div>
+            </div>
+          )}
+        </div>
+
       </div>
 
       {/* Embedded Rich Markdown Document Reader Modal */}

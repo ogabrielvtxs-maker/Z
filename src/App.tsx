@@ -113,6 +113,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>("cycle");
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [sidebarMinimized, setSidebarMinimized] = useState<boolean>(false);
+
   
   // Student reports addressed to them
   const [myReports, setMyReports] = useState<WeeklyReport[]>([]);
@@ -470,6 +471,7 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
+        localStorage.removeItem("firebase_auth_method_disabled");
         const email = firebaseUser.email?.toLowerCase().trim() || "";
         
         // Find user from our locally loaded state
@@ -930,7 +932,6 @@ export default function App() {
               <span className="text-sm font-oswald font-bold text-white uppercase tracking-wider">
                 alof.emacao<span className="text-amber-400"> mentoria</span>
               </span>
-              <span className="text-[9px] text-slate-400 font-mono tracking-widest block uppercase">Tático de Estudos</span>
             </div>
           </div>
 
@@ -1510,6 +1511,8 @@ export default function App() {
           );
         })}
       </div>
+
+
 
     </div>
   );

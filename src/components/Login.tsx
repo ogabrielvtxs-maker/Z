@@ -35,6 +35,11 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
   const [savedUserEmail, setSavedUserEmail] = useState<string | null>(null);
   const [savedUserName, setSavedUserName] = useState<string | null>(null);
 
+  // Firebase Auth Method Configuration Warning state
+  const [showConfigWarning, setShowConfigWarning] = useState<boolean>(() => {
+    return localStorage.getItem("firebase_auth_method_disabled") === "true";
+  });
+
   useEffect(() => {
     const savedEmail = localStorage.getItem("saved_login_email");
     const savedName = localStorage.getItem("saved_login_name");
@@ -140,6 +145,8 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
       try {
         await firebaseSignInWithEmailAndPassword(found.email, enteredPass);
         loginSuccess = true;
+        localStorage.removeItem("firebase_auth_method_disabled");
+        setShowConfigWarning(false);
       } catch (authErr: any) {
         console.warn("Firebase Auth login failed, checking if we can create user on-the-fly:", authErr);
         const errorCode = authErr.code || "";
@@ -155,12 +162,23 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
           try {
             await firebaseCreateUserWithEmailAndPassword(found.email, enteredPass);
             loginSuccess = true;
+            localStorage.removeItem("firebase_auth_method_disabled");
+            setShowConfigWarning(false);
           } catch (regErr: any) {
             console.error("Failed to register user on-the-fly in Firebase Auth:", regErr);
+            const regErrorCode = regErr.code || "";
+            if (regErrorCode === "auth/operation-not-allowed" || regErr.message?.includes("operation-not-allowed")) {
+              localStorage.setItem("firebase_auth_method_disabled", "true");
+              setShowConfigWarning(true);
+            }
             // If they already exist but threw an error, set loginSuccess to true so they can log in locally as fallback
             loginSuccess = true;
           }
         } else {
+          if (errorCode === "auth/operation-not-allowed" || errorMessage.includes("operation-not-allowed")) {
+            localStorage.setItem("firebase_auth_method_disabled", "true");
+            setShowConfigWarning(true);
+          }
           // Other Firebase auth error (e.g., too many requests, networks, etc.)
           // Fall back to local login success so the user is not locked out, but log warning
           console.error("Non-fatal Firebase Auth login error:", authErr);
@@ -206,10 +224,25 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
       let fbUser;
       try {
         fbUser = await firebaseCreateUserWithEmailAndPassword(regEmail, regPassword);
+        localStorage.removeItem("firebase_auth_method_disabled");
+        setShowConfigWarning(false);
       } catch (authErr: any) {
         console.error("Failed to register in Firebase Auth:", authErr);
-        // If they already exist in auth, that's fine, but if it's another error, we alert
-        if (authErr.code !== "auth/email-already-in-use") {
+        const errorCode = authErr.code || "";
+        const errorMessage = authErr.message || "";
+        
+        // If they already exist in auth, that's fine
+        if (errorCode === "auth/email-already-in-use") {
+          // Proceed normally
+        } else if (
+          errorCode === "auth/operation-not-allowed" ||
+          errorMessage.includes("operation-not-allowed")
+        ) {
+          // If Email/Password auth method is disabled in console, set warning flag and proceed with Firestore signup
+          localStorage.setItem("firebase_auth_method_disabled", "true");
+          setShowConfigWarning(true);
+          console.warn("Email/Password authentication method is disabled in the Firebase Console. Falling back to local database signup.");
+        } else {
           alert("Erro no cadastro de autenticação: " + (authErr.message || authErr));
           setRegisterLoading(false);
           return;
@@ -333,6 +366,36 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
             CFO & SOLDADO - PREPARAÇÃO DE ELITE
           </p>
         </div>
+
+        {/* Configuration notice banner when email/password auth provider is disabled */}
+        {showConfigWarning && (
+          <div className="mb-5 p-3.5 bg-amber-400/10 border border-amber-400/25 rounded-2xl text-[11px] text-amber-300 leading-relaxed space-y-1 relative animate-fade-in text-left">
+            <button 
+              type="button"
+              onClick={() => {
+                setShowConfigWarning(false);
+                localStorage.removeItem("firebase_auth_method_disabled");
+              }}
+              className="absolute top-2.5 right-2.5 text-amber-400 hover:text-white font-bold cursor-pointer transition text-xs px-1"
+              title="Dispensar aviso"
+            >
+              ×
+            </button>
+            <div className="flex items-center gap-1.5 font-bold uppercase text-[10px] text-amber-400 mb-1">
+              <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+              <span>Instrução de Configuração do Firebase</span>
+            </div>
+            <p>
+              O provedor de <strong>E-mail/Senha</strong> está desativado no seu console do Firebase.
+            </p>
+            <p className="text-slate-400">
+              Se você é o coordenador, ative-o em: <strong>Authentication &gt; Sign-in method &gt; E-mail/Senha</strong>.
+            </p>
+            <p className="text-slate-400 font-medium text-[10px]">
+              *Alunos continuarão conseguindo se cadastrar e acessar normalmente via base de dados local reserva enquanto isso.
+            </p>
+          </div>
+        )}
 
         {/* Dynamic Views: LOGIN */}
         {view === "login" && (

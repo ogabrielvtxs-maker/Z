@@ -115,6 +115,11 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   const [isRestoring, setIsRestoring] = useState<boolean>(false);
   const [restoreProgress, setRestoreProgress] = useState<string>("");
 
+  // Firebase Auth Method Disabled Warning
+  const [showFirebaseAuthWarning, setShowFirebaseAuthWarning] = useState<boolean>(() => {
+    return localStorage.getItem("firebase_auth_method_disabled") === "true";
+  });
+
   // Student essay submissions management state
   const [allEssaySubmissions, setAllEssaySubmissions] = useState<EssaySubmission[]>([]);
   const [loadingEssays, setLoadingEssays] = useState<boolean>(false);
@@ -277,6 +282,33 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   const [existingReports, setExistingReports] = useState<WeeklyReport[]>([]);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [reportToDeleteId, setReportToDeleteId] = useState<string | null>(null);
+
+  // State for delete confirmation modal (users and library themes)
+  const [deleteConfirmModal, setDeleteConfirmModal] = useState<{
+    isOpen: boolean;
+    type: "user" | "theme";
+    id: string;
+    name: string;
+  } | null>(null);
+
+  const handleConfirmDelete = async () => {
+    if (!deleteConfirmModal) return;
+    const { type, id } = deleteConfirmModal;
+    
+    try {
+      if (type === "user") {
+        onDeleteUser(id);
+        setNotification({ type: "success", message: "Guerreiro excluído com sucesso da plataforma!" });
+      } else if (type === "theme") {
+        await handleDeleteThemeDirectly(id);
+        setNotification({ type: "success", message: "Tema de redação excluído com sucesso!" });
+      }
+    } catch (err: any) {
+      setNotification({ type: "error", message: `Erro ao excluir: ${err.message}` });
+    } finally {
+      setDeleteConfirmModal(null);
+    }
+  };
 
   // Email sending loading state
   const [emailSendingId, setEmailSendingId] = useState<string | null>(null);
@@ -592,16 +624,22 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   };
 
   // Delete theme from DB
-  const handleDeleteTheme = async (themeId: string) => {
-    if (!window.confirm("Deseja realmente deletar este tema de redação? Os alunos não poderão mais selecioná-lo.")) {
-      return;
-    }
+  const handleDeleteTheme = (themeId: string) => {
+    const foundTheme = essayThemes.find(t => t.id === themeId);
+    setDeleteConfirmModal({
+      isOpen: true,
+      type: "theme",
+      id: themeId,
+      name: foundTheme ? foundTheme.title : "Tema de Redação"
+    });
+  };
 
+  const handleDeleteThemeDirectly = async (themeId: string) => {
     try {
       await deleteEssayThemeFromFirestore(themeId);
       setEssayThemes((prev) => prev.filter(t => t.id !== themeId));
     } catch (err: any) {
-      alert("Erro ao excluir tema: " + err.message);
+      setNotification({ type: "error", message: "Erro ao excluir tema: " + err.message });
     }
   };
 
@@ -1426,6 +1464,44 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
         </div>
       </div>
 
+      {/* Firebase Auth Warning Banner */}
+      {showFirebaseAuthWarning && (
+        <div className="p-4 mb-6 rounded-xl border bg-amber-500/10 border-amber-500/30 text-amber-300 text-xs leading-relaxed space-y-1 relative animate-fade-in">
+          <button 
+            type="button"
+            onClick={() => {
+              setShowFirebaseAuthWarning(false);
+              localStorage.removeItem("firebase_auth_method_disabled");
+            }}
+            className="absolute top-2.5 right-2.5 text-amber-400 hover:text-white font-bold cursor-pointer transition"
+            title="Dispensar aviso"
+          >
+            <X className="w-4 h-4" />
+          </button>
+          <div className="flex items-center gap-1.5 font-bold uppercase text-[10px] text-amber-400">
+            <AlertCircle className="w-4 h-4" />
+            <span>Alerta de Autenticação do Firebase (Instrução para o Administrador)</span>
+          </div>
+          <p>
+            O provedor de <strong>E-mail/Senha</strong> está desativado no Console do Firebase de seu projeto.
+          </p>
+          <p className="text-slate-400">
+            Para que o Firebase Auth funcione plenamente de forma síncrona na nuvem, acesse o{" "}
+            <a 
+              href="https://console.firebase.google.com/" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-amber-400 underline font-bold hover:text-amber-300"
+            >
+              Console do Firebase
+            </a>, vá em <strong>Authentication &gt; Sign-in method &gt; Adicionar provedor</strong> e ative o provedor de <strong>E-mail/Senha</strong>.
+          </p>
+          <p className="text-slate-400 font-medium text-[11px]">
+            *Seus alunos continuarão conseguindo logar normalmente através da base de dados local reserva enquanto isso.
+          </p>
+        </div>
+      )}
+
       {/* Notification banner */}
       {notification && (
         <div className={`p-4 mb-6 rounded-xl border flex items-center justify-between text-xs font-bold animate-fade-in ${
@@ -2146,7 +2222,12 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                         {/* Delete User */}
                         {user.id !== currentUser.id && (
                           <button
-                            onClick={() => onDeleteUser(user.id)}
+                            onClick={() => setDeleteConfirmModal({
+                              isOpen: true,
+                              type: "user",
+                              id: user.id,
+                              name: user.name
+                            })}
                             className="p-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 transition cursor-pointer"
                             title="Excluir Usuário"
                           >
@@ -4258,6 +4339,64 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                   )}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Delete Confirmation Modal */}
+      {deleteConfirmModal && deleteConfirmModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[150] flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md p-6 relative overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            {/* Ambient glow */}
+            <div className="absolute -top-12 -right-12 w-32 h-32 bg-rose-500/10 rounded-full blur-2xl" />
+            
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-2xl shrink-0">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              
+              <div className="space-y-2 flex-1">
+                <h4 className="text-sm font-black text-white uppercase tracking-wider">
+                  Confirmar Exclusão Tática
+                </h4>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  {deleteConfirmModal.type === "user" ? (
+                    <>
+                      Tem certeza de que deseja excluir permanentemente o guerreiro(a) <strong className="text-rose-400">{deleteConfirmModal.name}</strong>? Todo o progresso, simulados, notas e histórico de estudo serão perdidos para sempre.
+                    </>
+                  ) : (
+                    <>
+                      Tem certeza de que deseja excluir o tema de redação <strong className="text-rose-400">"{deleteConfirmModal.name}"</strong>? Ele não estará mais disponível para os alunos.
+                    </>
+                  )}
+                </p>
+                <div className="p-3 bg-slate-950 rounded-xl border border-slate-850/60 mt-4">
+                  <span className="text-[10px] text-rose-400 font-bold uppercase tracking-wider block mb-1">
+                    ⚠️ Atenção:
+                  </span>
+                  <p className="text-[10px] text-slate-500 leading-normal">
+                    Esta ação é definitiva e não pode ser desfeita após a confirmação.
+                  </p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex gap-2.5 mt-6 justify-end">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmModal(null)}
+                className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-300 text-xs font-semibold rounded-xl transition cursor-pointer"
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-black rounded-xl transition cursor-pointer shadow-lg shadow-rose-600/20"
+              >
+                Excluir Definitivamente
+              </button>
             </div>
           </div>
         </div>

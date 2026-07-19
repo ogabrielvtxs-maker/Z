@@ -22,7 +22,7 @@ import {
   createUserWithEmailAndPassword,
   updatePassword
 } from "firebase/auth";
-import { User, StudyCycle, WeeklyReport, ContentItem, SyllabusSection, PerformanceLog, CoordQuestion, PasswordResetRequest, EssaySubmission, EssayTheme } from "../types";
+import { User, StudyCycle, WeeklyReport, ContentItem, SyllabusSection, PerformanceLog, CoordQuestion, PasswordResetRequest, EssaySubmission, EssayTheme, StudyModule } from "../types";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDGQm2JPIEU4UkfkxKrF5dqPESKtp10XxQ",
@@ -459,6 +459,50 @@ export async function deleteContentItemFromFirestore(itemId: string): Promise<vo
   }
 }
 
+// --- STUDY MODULES ---
+
+export async function fetchModulesFromFirestore(): Promise<StudyModule[]> {
+  const path = "modules";
+  try {
+    const querySnapshot = await getDocs(collection(db, path));
+    const items: StudyModule[] = [];
+    querySnapshot.forEach((docSnap) => {
+      items.push(docSnap.data() as StudyModule);
+    });
+    return items.sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+    console.error("Error fetching modules from Firestore:", error);
+    return [];
+  }
+}
+
+export async function saveModuleToFirestore(moduleItem: StudyModule): Promise<void> {
+  const path = `modules/${moduleItem.id}`;
+  try {
+    await setDoc(doc(db, "modules", moduleItem.id), moduleItem);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+    console.error(`Error saving module ${moduleItem.id} to Firestore:`, error);
+  }
+}
+
+export async function deleteModuleFromFirestore(moduleId: string): Promise<void> {
+  const path = `modules/${moduleId}`;
+  try {
+    await deleteDoc(doc(db, "modules", moduleId));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("permission")) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+    console.error(`Error deleting module ${moduleId} from Firestore:`, error);
+  }
+}
+
 // Helper function to recursively remove undefined properties before writing to Firestore
 export function cleanUndefined(obj: any): any {
   if (obj === null || obj === undefined) {
@@ -478,6 +522,132 @@ export function cleanUndefined(obj: any): any {
     return cleaned;
   }
   return obj;
+}
+
+// --- OFFLINE SYNC QUEUE MANAGER ---
+
+export interface QueueItem {
+  id: string;
+  op: 'set' | 'delete';
+  collectionName: string;
+  docId: string;
+  data?: any;
+  timestamp: number;
+}
+
+const OFFLINE_QUEUE_KEY = "firestore_offline_sync_queue";
+
+function getOfflineQueue(): QueueItem[] {
+  try {
+    const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.error("Error reading offline sync queue:", e);
+    return [];
+  }
+}
+
+function saveOfflineQueue(queue: QueueItem[]): void {
+  try {
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  } catch (e) {
+    console.error("Error saving offline sync queue:", e);
+  }
+}
+
+let isOfflineSyncing = false;
+
+export async function syncOfflineQueue(): Promise<void> {
+  if (isOfflineSyncing) return;
+  if (!navigator.onLine) return;
+  
+  const queue = getOfflineQueue();
+  if (queue.length === 0) return;
+
+  isOfflineSyncing = true;
+  console.log(`[Offline Sync] Sincronizando ${queue.length} operações pendentes...`);
+  
+  const remaining: QueueItem[] = [];
+
+  for (const item of queue) {
+    try {
+      if (item.op === 'set') {
+        await setDoc(doc(db, item.collectionName, item.docId), item.data);
+      } else if (item.op === 'delete') {
+        await deleteDoc(doc(db, item.collectionName, item.docId));
+      }
+      console.log(`[Offline Sync] Sucesso: ${item.op} em ${item.collectionName}/${item.docId}`);
+    } catch (err) {
+      console.error(`[Offline Sync] Falha ao sincronizar ${item.op} em ${item.collectionName}/${item.docId}:`, err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.includes("permission") || errMsg.includes("not-found")) {
+        console.warn(`[Offline Sync] Descartando tarefa inválida ou sem permissão:`, item);
+      } else {
+        remaining.push(item);
+      }
+    }
+  }
+
+  saveOfflineQueue(remaining);
+  isOfflineSyncing = false;
+}
+
+export async function queueWrite(
+  op: 'set' | 'delete',
+  collectionName: string,
+  docId: string,
+  data?: any
+): Promise<void> {
+  const newItem: QueueItem = {
+    id: Math.random().toString(36).substring(2, 15),
+    op,
+    collectionName,
+    docId,
+    data,
+    timestamp: Date.now()
+  };
+
+  try {
+    if (!navigator.onLine) {
+      throw new Error("offline");
+    }
+    
+    if (op === 'set') {
+      await setDoc(doc(db, collectionName, docId), data);
+    } else {
+      await deleteDoc(doc(db, collectionName, docId));
+    }
+    
+    syncOfflineQueue();
+  } catch (error) {
+    console.warn(`[Offline Queue] Gravação direta falhou para ${collectionName}/${docId}. Adicionando à fila local.`, error);
+    
+    const queue = getOfflineQueue();
+    if (collectionName === "syllabus_progress" && op === 'set') {
+      const idx = queue.findIndex(item => item.collectionName === "syllabus_progress" && item.docId === docId && item.op === 'set');
+      if (idx !== -1) {
+        queue[idx] = newItem;
+      } else {
+        queue.push(newItem);
+      }
+    } else {
+      queue.push(newItem);
+    }
+    saveOfflineQueue(queue);
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => {
+    console.log("[Offline Sync] Conexão restabelecida. Iniciando sincronização automática...");
+    syncOfflineQueue();
+  });
+  
+  setInterval(() => {
+    if (navigator.onLine) {
+      syncOfflineQueue();
+    }
+  }, 30000);
 }
 
 // --- SYLLABUS PROGRESS ---
@@ -503,7 +673,8 @@ export async function saveSyllabusProgressToFirestore(studentId: string, section
   const path = `syllabus_progress/${studentId}`;
   try {
     const sanitizedSections = cleanUndefined(sections);
-    await setDoc(doc(db, "syllabus_progress", studentId), { studentId, sections: sanitizedSections, updatedAt: new Date().toISOString() });
+    const data = { studentId, sections: sanitizedSections, updatedAt: new Date().toISOString() };
+    await queueWrite('set', "syllabus_progress", studentId, data);
   } catch (error) {
     if (error instanceof Error && error.message.includes("permission")) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -535,7 +706,7 @@ export async function fetchPerformanceLogsFromFirestore(studentId: string): Prom
 export async function savePerformanceLogToFirestore(studentId: string, log: PerformanceLog): Promise<void> {
   const path = `performance_logs_${studentId}/${log.id}`;
   try {
-    await setDoc(doc(db, `performance_logs_${studentId}`, log.id), log);
+    await queueWrite('set', `performance_logs_${studentId}`, log.id, log);
   } catch (error) {
     if (error instanceof Error && error.message.includes("permission")) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -547,7 +718,7 @@ export async function savePerformanceLogToFirestore(studentId: string, log: Perf
 export async function deletePerformanceLogFromFirestore(studentId: string, logId: string): Promise<void> {
   const path = `performance_logs_${studentId}/${logId}`;
   try {
-    await deleteDoc(doc(db, `performance_logs_${studentId}`, logId));
+    await queueWrite('delete', `performance_logs_${studentId}`, logId);
   } catch (error) {
     if (error instanceof Error && error.message.includes("permission")) {
       handleFirestoreError(error, OperationType.DELETE, path);
