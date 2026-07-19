@@ -425,7 +425,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
               <h3 className="font-extrabold text-sm text-slate-100 uppercase tracking-wider flex items-center gap-2">
                 Revisão Espaçada Pendente
                 <span className="bg-amber-400 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded-full">
-                  {revisionAlerts.length} pendente{revisionAlerts.length > 1 ? "s" : ""}
+                  {`${revisionAlerts.length} pendente${revisionAlerts.length > 1 ? "s" : ""}`}
                 </span>
               </h3>
               <p className="text-slate-400 text-xs">
@@ -471,7 +471,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
             <div>
               <div className="flex items-center gap-2 text-amber-400 font-bold text-lg">
                 <Calendar className="w-5 h-5 text-amber-500" />
-                <span>Ciclo Semanal - Semana {isShortCycle ? cycle.weekNumber : selectedWeek}</span>
+                <span>{`Ciclo Semanal - Semana ${isShortCycle ? cycle.weekNumber : selectedWeek}`}</span>
               </div>
               <p className="text-slate-400 text-xs mt-1">
                 Bata 100% das suas metas diárias de questões e teorias para liberar a continuidade do ciclo.
@@ -496,12 +496,12 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
               ) : isSelectedWeekCompleted ? (
                 <div className="px-5 py-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 font-bold text-xs flex items-center gap-2 shadow-md">
                   <Award className="w-4 h-4 text-emerald-400 animate-bounce" />
-                  <span>Semana {selectedWeek} Concluída!</span>
+                  <span>{`Semana ${selectedWeek} Concluída!`}</span>
                 </div>
               ) : (
                 <div className="px-5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-amber-400 text-xs font-semibold flex items-center gap-2">
                   <Clock className="w-4 h-4 text-amber-500 animate-pulse" />
-                  <span>{completedDaysCount} / {cycle.days.length} Dias</span>
+                  <span>{`${completedDaysCount} / ${cycle.days.length} Dias`}</span>
                 </div>
               )}
             </div>
@@ -553,7 +553,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                           : "bg-slate-950 hover:bg-slate-850 border border-slate-850 text-slate-400"
                       }`}
                     >
-                      <span>Semana {w < 10 ? `0${w}` : w}</span>
+                      <span>{`Semana ${w < 10 ? '0' + w : w}`}</span>
                       {!unlocked && <Lock className="w-3 h-3 text-slate-500 shrink-0" />}
                       {unlocked && isWeekCompleted && <CheckSquare className="w-3.5 h-3.5" />}
                       {unlocked && isCurrentActiveWeek && selectedWeek !== w && (
@@ -636,7 +636,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-slate-300">Tempo estudado hoje no Pomodoro:</span>
                       <span className="font-mono text-sm font-black text-white bg-slate-950 px-2.5 py-0.5 rounded-lg border border-slate-850">
-                        {studiedHours.toFixed(2)}h
+                        {`${studiedHours.toFixed(2)}h`}
                       </span>
                     </div>
 
@@ -647,8 +647,10 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                           Meta Cumprida! Excelente Soldado!
                         </span>
                       ) : (
-                        <span className="text-xs text-slate-400 font-bold">
-                          Faltam <span className="text-amber-400 font-mono">{(Math.max(0, dailyGoalHours - studiedHours)).toFixed(2)}h</span> para atingir a meta
+                        <span className="text-xs text-slate-400 font-bold flex items-center gap-1">
+                          <span>Faltam</span>
+                          <span className="text-amber-400 font-mono">{`${(Math.max(0, dailyGoalHours - studiedHours)).toFixed(2)}h`}</span>
+                          <span>para atingir a meta</span>
                         </span>
                       )}
                     </div>
@@ -672,9 +674,9 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                   </div>
 
                   <div className="flex justify-between text-[10px] text-slate-500 font-extrabold uppercase tracking-widest">
-                    <span>{percent}% Completo</span>
+                    <span>{`${percent}% Completo`}</span>
                     <span>0.0h</span>
-                    <span>{dailyGoalHours.toFixed(1)}h</span>
+                    <span>{`${dailyGoalHours.toFixed(1)}h`}</span>
                   </div>
                 </div>
               );
@@ -687,7 +689,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
               <div className="flex items-center gap-2">
                 <Target className="w-4 h-4 text-amber-400" />
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                  Andamento do Ciclo ({activeDays.length} dia{activeDays.length > 1 ? "s" : ""} ativo{activeDays.length > 1 ? "s" : ""})
+                  {`Andamento do Ciclo (${activeDays.length} dia${activeDays.length > 1 ? "s" : ""} ativo${activeDays.length > 1 ? "s" : ""})`}
                 </span>
               </div>
               
@@ -727,7 +729,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                     {/* Day Title and Status */}
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
                       <span className="font-extrabold text-xs font-mono tracking-wider uppercase">
-                        Dia {actualDayNum < 10 ? `0${actualDayNum}` : actualDayNum}
+                        {`Dia ${actualDayNum < 10 ? '0' + actualDayNum : actualDayNum}`}
                       </span>
                       <span
                         className={`w-2.5 h-2.5 rounded-full ${
@@ -807,7 +809,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                         {/* Day Title and Status */}
                         <div className="flex items-center justify-between border-b border-emerald-500/10 pb-2 mb-3">
                           <span className="font-extrabold text-xs font-mono tracking-wider uppercase">
-                            Dia {actualDayNum < 10 ? `0${actualDayNum}` : actualDayNum} (Arquivado)
+                            {`Dia ${actualDayNum < 10 ? '0' + actualDayNum : actualDayNum} (Arquivado)`}
                           </span>
                           <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
                         </div>

@@ -2400,7 +2400,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                           : "text-slate-400 hover:text-slate-200 hover:bg-slate-950"
                       }`}
                     >
-                      Semana {w < 10 ? `0${w}` : w}
+                      {`Semana ${w < 10 ? '0' + w : w}`}
                     </button>
                   ))}
                 </div>
@@ -2420,7 +2420,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                     <div key={day.dayNumber} className="bg-slate-950/60 p-4 border border-slate-850 rounded-xl space-y-3">
                       <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
                         <span className="text-xs font-extrabold text-amber-400 uppercase tracking-wider font-mono">
-                          Dia {actualDayNum < 10 ? `0${actualDayNum}` : actualDayNum}
+                          {`Dia ${actualDayNum < 10 ? '0' + actualDayNum : actualDayNum}`}
                         </span>
                     <div className="flex items-center gap-1">
                       <span className="text-[10px] text-slate-400">Meta Questões:</span>
