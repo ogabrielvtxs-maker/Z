@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { StudyCycle, User, SyllabusSection, SyllabusItem } from "../types";
-import { CheckSquare, Square, Target, Calendar, Lock, Unlock, HelpCircle, ChevronRight, PlayCircle, Award, Clock, Bell, Archive, Eye, EyeOff, Plus, Minus } from "lucide-react";
+import { CheckSquare, Square, Target, Calendar, Lock, Unlock, HelpCircle, ChevronRight, PlayCircle, Award, Clock, Bell, Archive, Eye, EyeOff, Plus, Minus, FileText } from "lucide-react";
 import { fetchStudyCycleFromFirestore, saveStudyCycleToFirestore } from "../lib/firebase";
 import ConsistencyWidget from "./ConsistencyWidget";
 
@@ -27,6 +27,111 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
   const [editingNotesDay, setEditingNotesDay] = useState<number | null>(null);
   const [tempNotes, setTempNotes] = useState<string>("");
   const [lockWarning, setLockWarning] = useState<string | null>(null);
+
+  const renderCycleDetailsMarkdown = (rawText: string) => {
+    if (!rawText) return null;
+    const lines = rawText.split("\n");
+    const elements: React.ReactNode[] = [];
+    
+    let inList = false;
+    let listItems: React.ReactNode[] = [];
+
+    const flushList = (key: string | number) => {
+      if (inList && listItems.length > 0) {
+        elements.push(
+          <ul key={`list-${key}`} className="list-disc pl-5 my-2 space-y-1.5 text-slate-300">
+            {listItems}
+          </ul>
+        );
+        listItems = [];
+        inList = false;
+      }
+    };
+
+    const parseBoldText = (text: string) => {
+      const parts = text.split(/\*\*([\s\S]*?)\*\*/g);
+      return parts.map((part, i) => {
+        if (i % 2 === 1) {
+          return <strong key={i} className="text-amber-400 font-extrabold">{part}</strong>;
+        }
+        // Support italic *text*
+        const italicParts = part.split(/\*([\s\S]*?)\*/g);
+        return italicParts.map((subPart, j) => {
+          if (j % 2 === 1) {
+            return <em key={j} className="text-slate-100 italic">{subPart}</em>;
+          }
+          return subPart;
+        });
+      });
+    };
+
+    lines.forEach((line, idx) => {
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith("###")) {
+        flushList(idx);
+        elements.push(
+          <h4 key={idx} className="text-xs font-bold text-amber-400 mt-4 mb-2 uppercase tracking-wide">
+            {trimmed.replace("###", "").trim()}
+          </h4>
+        );
+        return;
+      }
+      if (trimmed.startsWith("##")) {
+        flushList(idx);
+        elements.push(
+          <h3 key={idx} className="text-sm font-black text-amber-300 border-b border-slate-800 pb-1 mt-5 mb-2.5 uppercase">
+            {trimmed.replace("##", "").trim()}
+          </h3>
+        );
+        return;
+      }
+      if (trimmed.startsWith("#")) {
+        flushList(idx);
+        elements.push(
+          <h2 key={idx} className="text-base font-black text-white mt-6 mb-3 uppercase tracking-wider">
+            {trimmed.replace("#", "").trim()}
+          </h2>
+        );
+        return;
+      }
+
+      if (trimmed.startsWith("-") || trimmed.startsWith("*")) {
+        const text = trimmed.substring(1).trim();
+        if (text !== "") {
+          listItems.push(
+            <li key={`li-${idx}`} className="text-xs text-slate-300 mb-1 leading-relaxed">
+              {parseBoldText(text)}
+            </li>
+          );
+          inList = true;
+          return;
+        }
+      }
+
+      if (trimmed === "---") {
+        flushList(idx);
+        elements.push(<hr key={idx} className="my-4 border-slate-800" />);
+        return;
+      }
+
+      if (trimmed === "") {
+        flushList(idx);
+        elements.push(<div key={idx} className="h-2" />);
+        return;
+      }
+
+      flushList(idx);
+      elements.push(
+        <p key={idx} className="text-xs text-slate-300 leading-relaxed mb-1.5">
+          {parseBoldText(trimmed)}
+        </p>
+      );
+    });
+
+    flushList("final");
+    return elements;
+  };
 
   // Checks if a week is unlocked (must complete 100% of the previous week)
   const isWeekUnlocked = (weekNum: number) => {
@@ -227,35 +332,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
     });
 
     // Recalculate day completed status
-    const allSubjectsCompleted = day.subjects.every((s) => s.completed);
-    const questionsCompleted = true; // Retired daily questions solved tracking from completion logic
-    day.completed = allSubjectsCompleted && questionsCompleted;
-
-    updatedDays[dayIndex] = day;
-
-    // Recalculate global cycle completed status
-    const allDaysCompleted = updatedDays.every((d) => d.completed);
-
-    saveCycle({
-      ...cycle,
-      days: updatedDays,
-      isCompleted: allDaysCompleted
-    });
-  };
-
-  const handleUpdateQuestions = (dayIndex: number, amount: number) => {
-    if (!cycle) return;
-
-    const updatedDays = [...cycle.days];
-    const day = { ...updatedDays[dayIndex] };
-
-    const newVal = Math.max(0, day.questionSolved + amount);
-    day.questionSolved = newVal;
-
-    // Recalculate day completed status
-    const allSubjectsCompleted = day.subjects.every((s) => s.completed);
-    const questionsCompleted = newVal >= day.questionTarget;
-    day.completed = allSubjectsCompleted && questionsCompleted;
+    day.completed = day.subjects.every((s) => s.completed);
 
     updatedDays[dayIndex] = day;
 
@@ -474,7 +551,7 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                 <span>{`Ciclo Semanal - Semana ${isShortCycle ? cycle.weekNumber : selectedWeek}`}</span>
               </div>
               <p className="text-slate-400 text-xs mt-1">
-                Bata 100% das suas metas diárias de questões e teorias para liberar a continuidade do ciclo.
+                Bata 100% das suas metas diárias de teorias para liberar a continuidade do ciclo.
               </p>
             </div>
 
@@ -506,6 +583,19 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
               )}
             </div>
           </div>
+
+          {/* Plano de Estudos / Detalhes do Ciclo Cadastrados pelo Coordenador */}
+          {cycle.cycleDetails && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-xl space-y-3.5 border-l-4 border-l-amber-400 animate-fade-in">
+              <div className="flex items-center gap-2 text-amber-400 font-bold text-sm uppercase tracking-wider">
+                <FileText className="w-5 h-5 text-amber-500 shrink-0" />
+                <span>Plano de Estudos & Detalhes do Período</span>
+              </div>
+              <div className="text-slate-200 text-xs leading-relaxed bg-slate-950/60 p-5 rounded-xl border border-slate-850/50 font-sans space-y-1">
+                {renderCycleDetailsMarkdown(cycle.cycleDetails)}
+              </div>
+            </div>
+          )}
 
           {/* Week Selector / Navigation Tabs */}
           {cycle && cycle.days && cycle.days.length > 7 && (

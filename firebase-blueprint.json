@@ -30,7 +30,8 @@
         "weekNumber": { "type": "number" },
         "days": { "type": "array" },
         "unlockedAt": { "type": "string" },
-        "isCompleted": { "type": "boolean" }
+        "isCompleted": { "type": "boolean" },
+        "cycleDetails": { "type": "string" }
       },
       "required": ["id", "studentId", "studentName", "weekNumber", "days", "unlockedAt", "isCompleted"]
     },

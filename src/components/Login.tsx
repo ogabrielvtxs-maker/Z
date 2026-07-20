@@ -165,11 +165,13 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
             localStorage.removeItem("firebase_auth_method_disabled");
             setShowConfigWarning(false);
           } catch (regErr: any) {
-            console.error("Failed to register user on-the-fly in Firebase Auth:", regErr);
             const regErrorCode = regErr.code || "";
             if (regErrorCode === "auth/operation-not-allowed" || regErr.message?.includes("operation-not-allowed")) {
               localStorage.setItem("firebase_auth_method_disabled", "true");
               setShowConfigWarning(true);
+              console.warn("Failed to register user on-the-fly in Firebase Auth (method disabled):", regErr);
+            } else {
+              console.warn("Failed to register user on-the-fly in Firebase Auth:", regErr);
             }
             // If they already exist but threw an error, set loginSuccess to true so they can log in locally as fallback
             loginSuccess = true;
@@ -178,10 +180,12 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
           if (errorCode === "auth/operation-not-allowed" || errorMessage.includes("operation-not-allowed")) {
             localStorage.setItem("firebase_auth_method_disabled", "true");
             setShowConfigWarning(true);
+            console.warn("Email/Password authentication is disabled in Firebase console. Using local fallback.");
+          } else {
+            // Other Firebase auth error (e.g., too many requests, networks, etc.)
+            // Fall back to local login success so the user is not locked out, but log warning
+            console.warn("Non-fatal Firebase Auth login error:", authErr);
           }
-          // Other Firebase auth error (e.g., too many requests, networks, etc.)
-          // Fall back to local login success so the user is not locked out, but log warning
-          console.error("Non-fatal Firebase Auth login error:", authErr);
           loginSuccess = true;
         }
       }
@@ -227,7 +231,6 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
         localStorage.removeItem("firebase_auth_method_disabled");
         setShowConfigWarning(false);
       } catch (authErr: any) {
-        console.error("Failed to register in Firebase Auth:", authErr);
         const errorCode = authErr.code || "";
         const errorMessage = authErr.message || "";
         
@@ -243,6 +246,7 @@ export default function Login({ onLoginSuccess, allUsers, onRegisterUser }: Logi
           setShowConfigWarning(true);
           console.warn("Email/Password authentication method is disabled in the Firebase Console. Falling back to local database signup.");
         } else {
+          console.error("Failed to register in Firebase Auth:", authErr);
           alert("Erro no cadastro de autenticação: " + (authErr.message || authErr));
           setRegisterLoading(false);
           return;

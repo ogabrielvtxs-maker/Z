@@ -37,6 +37,7 @@ export interface StudyCycle {
   days: CycleDay[];
   unlockedAt: string; // Date string
   isCompleted: boolean;
+  cycleDetails?: string; // Detalhes do ciclo, plano de estudos por período
 }
 
 export interface PerformanceLog {

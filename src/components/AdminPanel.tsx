@@ -163,7 +163,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   const [raioxEditSubject, setRaioxEditSubject] = useState<string>("Todos");
   const [raioxEditSearch, setRaioxEditSearch] = useState<string>("");
 
-  const [valSelectedStudentId, setValSelectedStudentId] = useState<string>("template");
+  const [valSelectedStudentId, setValSelectedStudentId] = useState<string>("");
   const [valSyllabus, setValSyllabus] = useState<SyllabusSection[]>([]);
   const [valLoading, setValLoading] = useState<boolean>(false);
   const [valSaving, setValSaving] = useState<boolean>(false);
@@ -261,6 +261,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
   // Cycle builder states
   const [targetWeek, setTargetWeek] = useState<number>(1);
   const [adminSelectedWeek, setAdminSelectedWeek] = useState<number>(1);
+  const [cycleDetails, setCycleDetails] = useState<string>("");
   const [cycleDays, setCycleDays] = useState<{
     dayNumber: number;
     questionTarget: number;
@@ -1009,6 +1010,17 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     }
   }, [allUsers, approvedStudents, selectedStudentId]);
 
+  useEffect(() => {
+    const filtered = approvedStudents.filter(student => valCategory === "cfo" ? student.accessCFO : !student.accessCFO);
+    if (filtered.length > 0) {
+      if (!valSelectedStudentId || !filtered.some(s => s.id === valSelectedStudentId)) {
+        setValSelectedStudentId(filtered[0].id);
+      }
+    } else {
+      setValSelectedStudentId("");
+    }
+  }, [allUsers, approvedStudents, valCategory, valSelectedStudentId]);
+
   // Load existing reports on mount and when student changes
   useEffect(() => {
     const loadReports = async () => {
@@ -1059,8 +1071,8 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
     setCycleDays(
       cycleDays.map((d) => {
         if (d.dayNumber === dayNum) {
-          if (d.subjects.length >= 4) {
-            setNotification({ type: "error", message: "Limite máximo de 4 matérias por dia atingido." });
+          if (d.subjects.length >= 10) {
+            setNotification({ type: "error", message: "Limite máximo de 10 matérias por dia atingido." });
             return d;
           }
           return { ...d, subjects: [...d.subjects, "Nova Matéria"] };
@@ -1176,6 +1188,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
             subjects: d.subjects.map(s => s.name),
             notes: d.notes || ""
           })));
+          setCycleDetails(fsCycle.cycleDetails || "");
           localStorage.setItem(`study_cycle_${selectedStudentId}`, JSON.stringify(fsCycle));
           return;
         }
@@ -1196,6 +1209,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
               subjects: d.subjects.map(s => s.name),
               notes: d.notes || ""
             })));
+            setCycleDetails(parsed.cycleDetails || "");
             return;
           }
         } catch (e) {
@@ -1206,6 +1220,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       // No cycle exists, reset editor to default template so admin starts with a clean template
       handleResetCycleToDefault();
       setTargetWeek(1);
+      setCycleDetails("");
     };
 
     loadStudentCycle();
@@ -1228,6 +1243,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
       weekNumber: targetWeek,
       isCompleted: false,
       unlockedAt: new Date().toISOString(),
+      cycleDetails: cycleDetails,
       days: cycleDays.map((d) => ({
         dayNumber: d.dayNumber,
         questionTarget: d.questionTarget,
@@ -1286,7 +1302,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
 
     setNotification({
       type: "success",
-      message: `Sucesso! Ciclo de estudos de ${student.name} foi removido com sucesso.`
+      message: `Sucesso! Todos os ciclos de estudos de ${student.name} foram excluídos definitivamente.`
     });
 
     setShowDeleteConfirm(false);
@@ -2334,10 +2350,74 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
             </div>
           </div>
 
+          {/* Plano de Estudos / Detalhes do Ciclo por Período */}
+          <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-lg animate-fade-in">
+            <h3 className="font-bold text-sm text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+              <FileText className="w-4 h-4 text-amber-400" />
+              Plano de Estudos & Detalhamento por Período
+            </h3>
+            <p className="text-xs text-slate-400">
+              Adicione orientações gerais, metas estratégicas e o cronograma do período (ex: metas mensais, quinzenais ou bimestrais) para guiar o aluno neste ciclo.
+            </p>
+            {/* Barra de Ferramentas de Formatação */}
+            <div className="flex flex-wrap gap-2 pb-1 border-b border-slate-850">
+              <button
+                type="button"
+                onClick={() => setCycleDetails(prev => prev + " **texto**")}
+                className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 hover:border-amber-400/40 border border-slate-800 rounded-lg text-[10px] font-bold text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
+                title="Inserir Negrito"
+              >
+                <span className="font-extrabold text-amber-400">B</span> Negrito
+              </button>
+              <button
+                type="button"
+                onClick={() => setCycleDetails(prev => prev + " *texto*")}
+                className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 hover:border-amber-400/40 border border-slate-800 rounded-lg text-[10px] font-medium italic text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
+                title="Inserir Itálico"
+              >
+                <span className="text-amber-400 font-bold">I</span> Itálico
+              </button>
+              <button
+                type="button"
+                onClick={() => setCycleDetails(prev => prev + "\n- Item")}
+                className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 hover:border-amber-400/40 border border-slate-800 rounded-lg text-[10px] text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
+                title="Inserir Meta de Tópico"
+              >
+                <span className="text-amber-400 font-bold">•</span> Lista
+              </button>
+              <button
+                type="button"
+                onClick={() => setCycleDetails(prev => prev + "\n### Título")}
+                className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 hover:border-amber-400/40 border border-slate-800 rounded-lg text-[10px] text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
+                title="Inserir Subtítulo"
+              >
+                <span className="font-black text-amber-400 text-[9px]">H3</span> Subtítulo
+              </button>
+              <button
+                type="button"
+                onClick={() => setCycleDetails(prev => prev + "\n---\n")}
+                className="px-2.5 py-1 bg-slate-900 hover:bg-slate-850 hover:border-amber-400/40 border border-slate-800 rounded-lg text-[10px] text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
+                title="Inserir Linha Divisória"
+              >
+                <span className="text-amber-400 font-bold">―</span> Divisor
+              </button>
+            </div>
+            <textarea
+              value={cycleDetails}
+              onChange={(e) => setCycleDetails(e.target.value)}
+              placeholder="Exemplo: Plano de Estudos (15/07 a 15/08)
+- Foco principal: Finalizar os tópicos de Direito Constitucional e Direitos Humanos.
+- Revisões diárias de Português e Matemática através de mapas mentais.
+- Realizar no mínimo 150 questões semanais com taxa de acerto acima de 75%."
+              className="w-full bg-slate-900 border border-slate-800 hover:border-amber-400/50 focus:border-amber-400 rounded-xl p-4 text-xs text-slate-200 placeholder-slate-650 focus:outline-none transition min-h-[140px] font-sans"
+              rows={5}
+            />
+          </div>
+
           {/* Builder Day-by-Day Editor */}
           <div className="space-y-4">
             <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400 border-b border-slate-850 pb-2">
-              Planejamento de Metas Diárias (Máximo 4 matérias por dia)
+              Planejamento de Metas Diárias (Máximo 10 matérias por dia)
             </h4>
 
             {/* Custom Cycle Length Controls */}
@@ -2407,7 +2487,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {cycleDays
                 .filter((day) => {
                   if (cycleDays.length <= 7) return true;
@@ -2417,33 +2497,22 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                 .map((day, idx) => {
                   const actualDayNum = day.dayNumber;
                   return (
-                    <div key={day.dayNumber} className="bg-slate-950/60 p-4 border border-slate-850 rounded-xl space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
+                    <div key={day.dayNumber} className="bg-slate-950/60 p-5 border border-slate-850 rounded-xl space-y-4 hover:border-amber-400/20 transition-all duration-300">
+                      <div className="flex items-center justify-between border-b border-slate-850 pb-2">
                         <span className="text-xs font-extrabold text-amber-400 uppercase tracking-wider font-mono">
                           {`Dia ${actualDayNum < 10 ? '0' + actualDayNum : actualDayNum}`}
                         </span>
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-slate-400">Meta Questões:</span>
-                      <input
-                        type="number"
-                        min="5"
-                        max="200"
-                        value={day.questionTarget}
-                        onChange={(e) => handleDayFieldChange(day.dayNumber, "questionTarget", parseInt(e.target.value) || 15)}
-                        className="w-12 bg-slate-900 border border-slate-800 rounded text-center text-xs text-slate-200 font-mono py-0.5"
-                      />
-                    </div>
-                  </div>
+                      </div>
 
                   {/* Day subjects list */}
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     {day.subjects.map((sub, sIdx) => (
-                      <div key={sIdx} className="flex items-center gap-1.5">
+                      <div key={sIdx} className="flex items-center gap-1.5 animate-fade-in">
                         <input
                           type="text"
                           value={sub}
                           onChange={(e) => handleDaySubjectChange(day.dayNumber, sIdx, e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-850 rounded px-2.5 py-1 text-[11px] text-slate-200"
+                          className="w-full bg-slate-900 border border-slate-850 rounded px-2.5 py-1 text-[11px] text-slate-200 focus:border-amber-400/50 focus:outline-none transition"
                           placeholder="Ex: Português: Crase"
                         />
                         <button
@@ -2457,13 +2526,13 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                       </div>
                     ))}
 
-                    {day.subjects.length < 4 && (
+                    {day.subjects.length < 10 && (
                       <button
                         type="button"
                         onClick={() => handleAddSubjectToDay(day.dayNumber)}
                         className="text-[10px] font-bold text-amber-400 hover:underline flex items-center gap-1 mt-1"
                       >
-                        + Adicionar Matéria ({day.subjects.length}/4)
+                        + Adicionar Matéria ({day.subjects.length}/10)
                       </button>
                     )}
 
@@ -2500,24 +2569,29 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                   onClick={() => setShowDeleteConfirm(true)}
                   className="w-full bg-slate-900 border border-rose-900/40 hover:bg-rose-950/25 text-rose-400 font-bold pt-[10px] pb-3 rounded-xl text-xs transition uppercase tracking-wider cursor-pointer shadow-md"
                 >
-                  Excluir Ciclo Existente do Aluno
+                  Excluir Todos os Ciclos do Aluno
                 </button>
               ) : (
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={handleDeleteStudentCycle}
-                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 rounded-xl text-[10px] transition uppercase tracking-wider cursor-pointer shadow-md"
-                  >
-                    Confirmar Exclusão
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowDeleteConfirm(false)}
-                    className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 rounded-xl text-[10px] transition uppercase tracking-wider cursor-pointer shadow-md"
-                  >
-                    Cancelar
-                  </button>
+                <div className="flex flex-col gap-2 w-full">
+                  <div className="text-[10px] text-rose-400 font-bold text-center uppercase tracking-wide">
+                    ⚠️ Atenção: Isso excluirá definitivamente todos os ciclos e semanas deste aluno!
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDeleteStudentCycle}
+                      className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 rounded-xl text-[10px] transition uppercase tracking-wider cursor-pointer shadow-md"
+                    >
+                      Confirmar Exclusão de Todos
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteConfirm(false)}
+                      className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 rounded-xl text-[10px] transition uppercase tracking-wider cursor-pointer shadow-md"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -2880,7 +2954,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                     <button
                       onClick={() => {
                         setValCategory("cfo");
-                        setValSelectedStudentId("template");
+                        setValSelectedStudentId("");
                       }}
                       className={`px-3 py-1.5 text-[10px] font-black uppercase rounded-lg transition cursor-pointer ${
                         valCategory === "cfo" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
@@ -2891,7 +2965,7 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                     <button
                       onClick={() => {
                         setValCategory("soldado");
-                        setValSelectedStudentId("template");
+                        setValSelectedStudentId("");
                       }}
                       className={`px-3 py-1.5 text-[10px] font-black uppercase rounded-lg transition cursor-pointer ${
                         valCategory === "soldado" ? "bg-amber-400 text-slate-950" : "text-slate-400 hover:text-white"
@@ -3013,7 +3087,9 @@ export default function AdminPanel({ currentUser, allUsers, onUpdateUser, onDele
                       onChange={(e) => setValSelectedStudentId(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-850 text-xs text-slate-200 px-3 py-2.5 rounded-xl focus:outline-none focus:border-amber-400 font-medium"
                     >
-                      <option value="template">📝 Modelo Geral (Template para Novos Alunos)</option>
+                      {approvedStudents.filter(student => valCategory === "cfo" ? student.accessCFO : !student.accessCFO).length === 0 && (
+                        <option value="">Nenhum aluno cadastrado nesta categoria</option>
+                      )}
                       {approvedStudents
                         .filter(student => valCategory === "cfo" ? student.accessCFO : !student.accessCFO)
                         .map(student => (
