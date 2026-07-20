@@ -801,77 +801,257 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
               </p>
             )}
 
-            {/* Grid of Active Days */}
-            <div className={`grid ${getGridColsClass(activeDays.length)} gap-4`}>
+            {/* List of Active Days in horizontal rows */}
+            <div className="flex flex-col gap-6 lg:gap-8">
               {activeDays.map((day) => {
                 const originalIdx = cycle.days.findIndex((d) => d.dayNumber === day.dayNumber);
                 const actualDayNum = ((cycle?.weekNumber || 1) - 1) * 7 + day.dayNumber;
 
+                // Match revision alerts that belong to the subjects of this day
+                const dayRevisions = revisionAlerts.filter(alert => {
+                  return day.subjects.some(sub => {
+                    const sName = sub.name.toLowerCase();
+                    const aSub = alert.subject.toLowerCase();
+                    return sName.includes(aSub) || aSub.includes(sName) ||
+                           (aSub.includes("portuguesa") && sName.includes("portuguesa")) ||
+                           (aSub.includes("constitucional") && sName.includes("constitucional")) ||
+                           (aSub.includes("administrativo") && sName.includes("administrativo")) ||
+                           (aSub.includes("penal") && sName.includes("penal")) ||
+                           (aSub.includes("militar") && sName.includes("militar")) ||
+                           (aSub.includes("humanos") && sName.includes("humanos")) ||
+                           (aSub.includes("história") && sName.includes("histór")) ||
+                           (aSub.includes("geografia") && sName.includes("geogr")) ||
+                           (aSub.includes("informática") && sName.includes("informát")) ||
+                           (aSub.includes("raciocínio") && sName.includes("raciocín")) ||
+                           (aSub.includes("matemática") && sName.includes("matemát")) ||
+                           (aSub.includes("inglês") && sName.includes("inglês")) ||
+                           (aSub.includes("inglesa") && sName.includes("ingl"));
+                  });
+                });
+
+                // Is this the first uncompleted active day?
+                const firstUncompletedDay = activeDays.find(d => !d.completed);
+                const isFirstUncompleted = firstUncompletedDay && firstUncompletedDay.dayNumber === day.dayNumber;
+                
+                // If it is the first uncompleted day, let's also find all revision alerts that don't match ANY of the active days' subjects, and show them here as general revisions so they aren't lost
+                let generalRevisions: typeof revisionAlerts = [];
+                if (isFirstUncompleted) {
+                  generalRevisions = revisionAlerts.filter(alert => {
+                    // check if it matches ANY day's subjects in the active list
+                    const matchesAnyDay = activeDays.some(d => {
+                      return d.subjects.some(sub => {
+                        const sName = sub.name.toLowerCase();
+                        const aSub = alert.subject.toLowerCase();
+                        return sName.includes(aSub) || aSub.includes(sName) ||
+                               (aSub.includes("portuguesa") && sName.includes("portuguesa")) ||
+                               (aSub.includes("constitucional") && sName.includes("constitucional")) ||
+                               (aSub.includes("administrativo") && sName.includes("administrativo")) ||
+                               (aSub.includes("penal") && sName.includes("penal")) ||
+                               (aSub.includes("militar") && sName.includes("militar")) ||
+                               (aSub.includes("humanos") && sName.includes("humanos")) ||
+                               (aSub.includes("história") && sName.includes("histór")) ||
+                               (aSub.includes("geografia") && sName.includes("geogr")) ||
+                               (aSub.includes("informática") && sName.includes("informát")) ||
+                               (aSub.includes("raciocínio") && sName.includes("raciocín")) ||
+                               (aSub.includes("matemática") && sName.includes("matemát")) ||
+                               (aSub.includes("inglês") && sName.includes("inglês")) ||
+                               (aSub.includes("inglesa") && sName.includes("ingl"));
+                      });
+                    });
+                    return !matchesAnyDay;
+                  });
+                }
+
+                const allRevisionsForDay = [...dayRevisions, ...generalRevisions];
+                const completedSubjectsCount = day.subjects.filter(s => s.completed).length;
+                const totalSubjectsCount = day.subjects.length;
+                const progressPercent = totalSubjectsCount > 0 ? (completedSubjectsCount / totalSubjectsCount) * 100 : 0;
+
                 return (
                   <div
                     key={day.dayNumber}
-                    className={`border rounded-xl p-4 flex flex-col justify-between transition ${
+                    className={`border-2 rounded-2xl p-6 md:p-8 transition duration-350 shadow-2xl relative overflow-hidden ${
                       day.completed
-                        ? "bg-emerald-950/25 border-emerald-500/30 text-emerald-100"
-                        : "bg-slate-900/90 border-slate-800 text-white hover:border-slate-700"
+                        ? "bg-gradient-to-br from-emerald-950/15 via-slate-900 to-slate-950 border-emerald-500/20 text-emerald-100"
+                        : "bg-gradient-to-br from-slate-900 via-slate-950 to-slate-950 border-slate-800 text-white hover:border-slate-700/80"
                     }`}
                   >
-                    {/* Day Title and Status */}
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
-                      <span className="font-extrabold text-xs font-mono tracking-wider uppercase">
-                        {`Dia ${actualDayNum < 10 ? '0' + actualDayNum : actualDayNum}`}
-                      </span>
-                      <span
-                        className={`w-2.5 h-2.5 rounded-full ${
-                          day.completed ? "bg-emerald-400 animate-pulse" : "bg-amber-500"
-                        }`}
-                        title={day.completed ? "Metas Concluídas" : "Pendências Pendentes"}
-                      />
-                    </div>
+                    {/* Top status bar highlighting active state */}
+                    <div className={`absolute top-0 left-0 right-0 h-[3px] ${day.completed ? "bg-emerald-500" : "bg-slate-800"}`} />
 
-                    {/* Subjects to study */}
-                    <div className="space-y-2 mb-4 flex-1">
-                      {day.subjects.map((sub) => (
-                        <button
-                          key={sub.id}
-                          onClick={() => handleToggleSubject(originalIdx, sub.id)}
-                          className="w-full text-left flex items-start gap-2 group cursor-pointer"
-                        >
-                          <div className="shrink-0 mt-0.5">
-                            {sub.completed ? (
-                              <CheckSquare className="w-4 h-4 text-emerald-400" />
-                            ) : (
-                              <Square className="w-4 h-4 text-slate-500 group-hover:text-amber-400" />
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-stretch">
+                      
+                      {/* COLUMN 1: DAY INFO & PROGRESS */}
+                      <div className="lg:col-span-3 flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-slate-800/80 pb-5 lg:pb-0 lg:pr-6 md:pr-8 shrink-0">
+                        <div className="space-y-4">
+                          {/* Day Banner */}
+                          <div className="flex items-center justify-between lg:block lg:space-y-2">
+                            <div className="flex items-center gap-3">
+                              <span className="text-4xl font-extrabold font-mono tracking-tighter text-slate-100">
+                                {`DIA ${actualDayNum < 10 ? '0' + actualDayNum : actualDayNum}`}
+                              </span>
+                              <span
+                                className={`w-3.5 h-3.5 rounded-full border-2 ${
+                                  day.completed ? "bg-emerald-400 border-emerald-500 animate-pulse" : "bg-amber-500 border-amber-600"
+                                }`}
+                                title={day.completed ? "Metas Concluídas" : "Pendências Pendentes"}
+                              />
+                            </div>
+                            
+                            <div className="flex flex-wrap gap-1.5 mt-1">
+                              {day.completed ? (
+                                <span className="text-[10px] bg-emerald-500/10 text-emerald-400 font-extrabold uppercase tracking-widest px-2.5 py-1 rounded border border-emerald-500/20">
+                                  Meta Cumprida
+                                </span>
+                              ) : (
+                                <span className="text-[10px] bg-amber-400/10 text-amber-400 font-extrabold uppercase tracking-widest px-2.5 py-1 rounded border border-amber-400/20 animate-pulse">
+                                  Pendente
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Stats Metrics Grid */}
+                          <div className="grid grid-cols-2 lg:grid-cols-1 gap-2 pt-2">
+                            <div className="bg-slate-950/50 border border-slate-850 p-2.5 rounded-xl">
+                              <span className="text-[9px] text-slate-500 font-extrabold uppercase block tracking-wider">Metas</span>
+                              <span className="text-xs font-black text-slate-200">
+                                {completedSubjectsCount} / {totalSubjectsCount} Matérias
+                              </span>
+                            </div>
+                            <div className="bg-slate-950/50 border border-slate-850 p-2.5 rounded-xl">
+                              <span className="text-[9px] text-slate-500 font-extrabold uppercase block tracking-wider">Meta Questões</span>
+                              <span className="text-xs font-black text-amber-400 flex items-center gap-1">
+                                <Target className="w-3 h-3 shrink-0 text-amber-500" />
+                                {day.questionTarget || 15} Qs
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Progress Bar */}
+                        {totalSubjectsCount > 0 && (
+                          <div className="mt-4 pt-3 lg:border-t border-slate-850/50">
+                            <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                              <span>Progresso de Hoje</span>
+                              <span className="font-mono text-amber-400">{Math.round(progressPercent)}%</span>
+                            </div>
+                            <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-850">
+                              <div 
+                                className={`h-full bg-gradient-to-r transition-all duration-300 ${
+                                  day.completed ? "from-emerald-500 to-teal-400" : "from-amber-500 to-amber-300"
+                                }`}
+                                style={{ width: `${progressPercent}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* COLUMN 2: STUDY CONTENT (TEORIAS) */}
+                      <div className="lg:col-span-5 flex flex-col justify-between space-y-3.5">
+                        <div>
+                          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 mb-3">
+                            <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                            <span>Teorias & Matérias do Dia (Vertical)</span>
+                          </div>
+                          
+                          <div className="space-y-2.5">
+                            {day.subjects.map((sub) => (
+                              <button
+                                key={sub.id}
+                                onClick={() => handleToggleSubject(originalIdx, sub.id)}
+                                className={`w-full text-left flex items-start gap-3.5 p-3.5 rounded-xl border transition-all duration-200 group cursor-pointer ${
+                                  sub.completed 
+                                    ? "bg-emerald-950/20 border-emerald-500/20 text-slate-400 hover:bg-emerald-950/30" 
+                                    : "bg-slate-950/50 border-slate-850 text-slate-200 hover:bg-slate-950 hover:border-amber-400/30"
+                                }`}
+                              >
+                                <div className="shrink-0 mt-0.5">
+                                  {sub.completed ? (
+                                    <CheckSquare className="w-5 h-5 text-emerald-400" />
+                                  ) : (
+                                    <Square className="w-5 h-5 text-slate-600 group-hover:text-amber-400 transition" />
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <span
+                                    className={`text-xs md:text-sm font-semibold leading-relaxed break-words block ${
+                                      sub.completed ? "line-through text-slate-500 font-normal" : "text-slate-100 font-bold"
+                                    }`}
+                                  >
+                                    {sub.name}
+                                  </span>
+                                </div>
+                              </button>
+                            ))}
+
+                            {day.subjects.length === 0 && (
+                              <div className="p-4 bg-slate-950/30 border border-dashed border-slate-850 rounded-xl text-center">
+                                <span className="text-xs text-slate-500 italic">Descanso planejado para recarga mental</span>
+                              </div>
                             )}
                           </div>
-                          <span
-                            className={`text-[11px] leading-snug font-medium break-all ${
-                              sub.completed ? "line-through text-slate-500" : "text-slate-200"
-                            }`}
-                          >
-                            {sub.name}
-                          </span>
-                        </button>
-                      ))}
-
-                      {day.subjects.length === 0 && (
-                        <span className="text-[10px] text-slate-500 italic block">Descanso planejado</span>
-                      )}
-                    </div>
-
-
-
-                    {/* Observações / Anotações (Read-only for Student) */}
-                    {day.notes && (
-                      <div className="mt-4 pt-3 border-t border-slate-850/60 text-left">
-                        <div className="bg-slate-950/40 border border-slate-850/40 p-2.5 rounded-lg space-y-1">
-                          <div className="text-[9px] text-amber-400 font-extrabold uppercase tracking-wider">
-                            <span>📝 Observações da Coordenação</span>
-                          </div>
-                          <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words">{day.notes}</p>
                         </div>
                       </div>
-                    )}
+
+                      {/* COLUMN 3: REVISIONS & FEEDBACK */}
+                      <div className="lg:col-span-4 flex flex-col justify-between border-t lg:border-t-0 lg:border-l border-slate-800/80 pt-5 lg:pt-0 lg:pl-6 md:pl-8 space-y-4">
+                        {/* Revisions alerts block */}
+                        <div>
+                          <div className="text-[10px] font-black text-amber-400 uppercase tracking-widest flex items-center gap-1.5 mb-3">
+                            <Bell className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                            <span>Revisões Espaçadas Pendentes</span>
+                          </div>
+
+                          {allRevisionsForDay.length > 0 ? (
+                            <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
+                              {allRevisionsForDay.map(rev => (
+                                <button
+                                  key={`day-rev-${rev.topicId}`}
+                                  onClick={() => handleCompleteRevision(rev.sectionId, rev.topicId)}
+                                  className="w-full text-left flex items-start gap-3 bg-gradient-to-br from-amber-500/10 to-amber-600/5 hover:from-amber-500/20 hover:to-amber-600/10 border border-amber-500/30 hover:border-amber-400/50 p-3 rounded-xl transition group cursor-pointer"
+                                >
+                                  <div className="shrink-0 mt-0.5">
+                                    <CheckSquare className="w-4 h-4 text-amber-400 group-hover:scale-110 transition" />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center justify-between gap-1.5">
+                                      <span className="text-[9px] font-extrabold text-amber-400 uppercase tracking-widest leading-none">
+                                        Revisar {rev.subject}
+                                      </span>
+                                      <span className="text-[8px] bg-amber-400/20 text-amber-300 px-1 py-0.2 rounded uppercase font-black">
+                                        Fase {rev.stage}
+                                      </span>
+                                    </div>
+                                    <span className="text-xs text-slate-100 font-bold block mt-1 leading-snug break-words" title={rev.topicTitle}>
+                                      {rev.topicTitle}
+                                    </span>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="p-3 bg-slate-950/20 border border-slate-850/40 rounded-xl text-center">
+                              <span className="text-[10px] text-slate-500 italic block">Nenhuma revisão ativa pendente para hoje</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Coordination Feedback / Notes */}
+                        {day.notes && (
+                          <div className="pt-2 border-t border-slate-850/60 text-left">
+                            <div className="bg-slate-950/40 border border-slate-850/40 p-3 rounded-xl space-y-1">
+                              <div className="text-[9px] text-amber-400 font-extrabold uppercase tracking-wider flex items-center gap-1">
+                                <span>📝 Observações da Coordenação</span>
+                              </div>
+                              <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words">{day.notes}</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                    </div>
                   </div>
                 );
               })}
@@ -887,49 +1067,53 @@ export default function WeeklyCycle({ currentUser, onOpenPomodoro }: WeeklyCycle
                   </span>
                 </div>
                 
-                <div className={`grid ${getGridColsClass(archivedDays.length)} gap-4 opacity-75 hover:opacity-100 transition duration-300`}>
+                <div className="flex flex-col gap-4 opacity-75 hover:opacity-100 transition duration-300">
                   {archivedDays.map((day) => {
                     const originalIdx = cycle.days.findIndex((d) => d.dayNumber === day.dayNumber);
                     const actualDayNum = ((cycle?.weekNumber || 1) - 1) * 7 + day.dayNumber;
                     return (
                       <div
                         key={day.dayNumber}
-                        className="border border-emerald-500/20 bg-emerald-950/10 rounded-xl p-4 flex flex-col justify-between text-emerald-100"
+                        className="border border-emerald-500/20 bg-emerald-950/10 rounded-xl p-5 md:p-6 flex flex-col md:flex-row gap-4 items-stretch text-emerald-100"
                       >
                         {/* Day Title and Status */}
-                        <div className="flex items-center justify-between border-b border-emerald-500/10 pb-2 mb-3">
-                          <span className="font-extrabold text-xs font-mono tracking-wider uppercase">
-                            {`Dia ${actualDayNum < 10 ? '0' + actualDayNum : actualDayNum} (Arquivado)`}
-                          </span>
-                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+                        <div className="md:w-1/4 flex flex-col justify-between border-b md:border-b-0 md:border-r border-emerald-500/10 pb-3 md:pb-0 md:pr-4">
+                          <div className="flex items-center gap-2">
+                            <span className="font-extrabold text-lg font-mono tracking-wider uppercase">
+                              {`Dia ${actualDayNum < 10 ? '0' + actualDayNum : actualDayNum}`}
+                            </span>
+                            <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded uppercase font-black tracking-wider">
+                              Arquivado
+                            </span>
+                          </div>
+                          <span className="text-xs text-slate-500 mt-1">Concluído e arquivado para maior foco.</span>
                         </div>
 
                         {/* Subjects */}
-                        <div className="space-y-2 mb-4 flex-1">
+                        <div className="md:w-2/4 space-y-2 flex flex-col justify-center">
+                          <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider mb-1">Matérias Estudadas:</div>
                           {day.subjects.map((sub) => (
                             <button
                               key={sub.id}
                               onClick={() => handleToggleSubject(originalIdx, sub.id)}
-                              className="w-full text-left flex items-start gap-2 group cursor-pointer"
+                              className="w-full text-left flex items-start gap-2.5 group cursor-pointer"
                             >
-                              <CheckSquare className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                              <span className="text-[11px] leading-snug font-medium line-through text-slate-500 break-all">
+                              <CheckSquare className="w-4.5 h-4.5 text-emerald-500 shrink-0 mt-0.5" />
+                              <span className="text-xs leading-snug font-semibold line-through text-slate-500 break-words">
                                 {sub.name}
                               </span>
                             </button>
                           ))}
                         </div>
 
-
-
-                        {/* Observações / Anotações (Read-only for Student) */}
+                        {/* Notes / Observações */}
                         {day.notes && (
-                          <div className="mt-4 pt-3 border-t border-emerald-500/10 text-left">
-                            <div className="bg-slate-950/40 border border-emerald-500/10 p-2.5 rounded-lg space-y-1">
+                          <div className="md:w-1/4 flex items-center border-t md:border-t-0 md:border-l border-emerald-500/10 pt-3 md:pt-0 md:pl-4">
+                            <div className="bg-slate-950/40 border border-emerald-500/10 p-2.5 rounded-lg w-full">
                               <div className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider">
-                                <span>📝 Observações da Coordenação</span>
+                                <span>📝 Observações</span>
                               </div>
-                              <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words">{day.notes}</p>
+                              <p className="text-[10px] text-slate-400 leading-relaxed max-h-[80px] overflow-y-auto whitespace-pre-wrap break-words">{day.notes}</p>
                             </div>
                           </div>
                         )}

@@ -117,6 +117,8 @@ export default function App() {
   
   // Student reports addressed to them
   const [myReports, setMyReports] = useState<WeeklyReport[]>([]);
+  const [readReportIds, setReadReportIds] = useState<string[]>([]);
+  const [expandedReportIds, setExpandedReportIds] = useState<string[]>([]);
 
   // Syllabus progress and login tracking states
   const [syllabusProgressPercent, setSyllabusProgressPercent] = useState<number>(0);
@@ -644,6 +646,20 @@ export default function App() {
   // Fetch and sync reports when current student is loaded
   useEffect(() => {
     if (currentUser) {
+      // Sync read report IDs
+      const key = `read_reports_${currentUser.id}`;
+      const savedRead = localStorage.getItem(key);
+      if (savedRead) {
+        try {
+          setReadReportIds(JSON.parse(savedRead));
+        } catch (e) {
+          setReadReportIds([]);
+        }
+      } else {
+        setReadReportIds([]);
+      }
+      setExpandedReportIds([]);
+
       const loadAndSyncReports = async () => {
         // First load from localStorage for rapid UX
         const savedReportsStr = localStorage.getItem("all_reports");
@@ -678,6 +694,25 @@ export default function App() {
       loadAndSyncReports();
     }
   }, [currentUser, activeTab]);
+
+  const markReportAsRead = (reportId: string) => {
+    if (!currentUser) return;
+    if (readReportIds.includes(reportId)) return;
+    const updated = [...readReportIds, reportId];
+    setReadReportIds(updated);
+    localStorage.setItem(`read_reports_${currentUser.id}`, JSON.stringify(updated));
+  };
+
+  const toggleExpandReport = (reportId: string) => {
+    if (expandedReportIds.includes(reportId)) {
+      setExpandedReportIds(expandedReportIds.filter(id => id !== reportId));
+    } else {
+      setExpandedReportIds([...expandedReportIds, reportId]);
+      markReportAsRead(reportId);
+    }
+  };
+
+  const unreadReportsCount = myReports.filter(r => !readReportIds.includes(r.id)).length;
 
   const handleLoginSuccess = (user: User, remember: boolean) => {
     // Clear session storage flags for a clean login cycle
@@ -1095,9 +1130,9 @@ export default function App() {
                       <Mail className="w-4 h-4 shrink-0" />
                       <span>Correio Coordenador</span>
                     </div>
-                    {myReports.length > 0 && (
-                      <span className="bg-amber-400 text-slate-950 text-[9px] font-black px-2 py-0.5 rounded-full">
-                        {myReports.length}
+                    {unreadReportsCount > 0 && (
+                      <span className="bg-amber-400 text-slate-950 text-[9px] font-black px-2 py-0.5 rounded-full animate-pulse">
+                        {unreadReportsCount}
                       </span>
                     )}
                   </button>
@@ -1275,7 +1310,7 @@ export default function App() {
                   }`}
                 >
                   <Mail className="w-4 h-4" />
-                  Correio ({myReports.length})
+                  Correio {unreadReportsCount > 0 ? `(${unreadReportsCount})` : ""}
                 </button>
                 <button
                   onClick={() => { setActiveTab("questions"); setMobileMenuOpen(false); }}
@@ -1406,23 +1441,82 @@ export default function App() {
               </div>
 
               <div className="space-y-4">
-                {myReports.map((report) => (
-                  <div key={report.id} className="bg-slate-950 p-5 rounded-2xl border border-slate-850 space-y-3 relative overflow-hidden group">
-                    <div className="absolute top-0 left-0 w-1.5 h-full bg-amber-400" />
-                    
-                    <div className="flex justify-between items-center text-xs text-slate-400 border-b border-slate-850 pb-2">
-                      <div className="flex items-center gap-1">
-                        <Award className="w-4 h-4 text-amber-400" />
-                        <span className="font-bold text-amber-400 uppercase tracking-wide font-mono">Boletim Tático - Semana {report.weekNumber}</span>
-                      </div>
-                      <span className="font-mono text-[10px] text-slate-500">Postado em: {report.createdAt.split("T")[0]}</span>
-                    </div>
+                {myReports.map((report) => {
+                  const isRead = readReportIds.includes(report.id);
+                  const isExpanded = expandedReportIds.includes(report.id);
 
-                    <p className="text-xs text-slate-200 whitespace-pre-line leading-relaxed pl-1.5">
-                      {stripMarkdownAsterisks(report.content)}
-                    </p>
-                  </div>
-                ))}
+                  return (
+                    <div 
+                      key={report.id} 
+                      onClick={() => toggleExpandReport(report.id)}
+                      className={`bg-slate-950 p-5 rounded-2xl border transition duration-300 relative overflow-hidden group cursor-pointer ${
+                        isRead 
+                          ? "border-slate-900 opacity-80" 
+                          : "border-amber-400/30 shadow-amber-400/5 shadow-md"
+                      }`}
+                    >
+                      <div className={`absolute top-0 left-0 w-1.5 h-full ${isRead ? "bg-slate-700" : "bg-amber-400"}`} />
+                      
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-400 border-b border-slate-850 pb-2.5">
+                        <div className="flex items-center gap-2">
+                          <Award className={`w-4 h-4 ${isRead ? "text-slate-500" : "text-amber-400"}`} />
+                          <span className={`font-bold uppercase tracking-wide font-mono ${isRead ? "text-slate-400" : "text-amber-400"}`}>
+                            Boletim Tático - Semana {report.weekNumber}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="font-mono text-[10px] text-slate-500">Postado: {report.createdAt.split("T")[0]}</span>
+                          {isRead ? (
+                            <span className="bg-slate-900/60 text-slate-500 text-[9px] font-extrabold uppercase tracking-widest px-2 py-0.5 rounded border border-slate-850">
+                              ✓ Lido
+                            </span>
+                          ) : (
+                            <span className="bg-amber-400/10 text-amber-400 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded border border-amber-400/20 animate-pulse">
+                              ● Não Lido
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Content Preview / Fully Expanded Content */}
+                      <div className="mt-3 pl-1.5">
+                        {isExpanded ? (
+                          <div className="space-y-3.5">
+                            <p className="text-xs text-slate-100 whitespace-pre-line leading-relaxed">
+                              {stripMarkdownAsterisks(report.content)}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleExpandReport(report.id);
+                              }}
+                              className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-lg text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-white transition mt-2 cursor-pointer"
+                            >
+                              Fechar Mensagem
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <p className="text-xs text-slate-400 line-clamp-1 max-w-xl">
+                              {stripMarkdownAsterisks(report.content)}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleExpandReport(report.id);
+                              }}
+                              className="px-3.5 py-1.5 bg-amber-400 text-slate-950 rounded-lg text-[10px] font-black uppercase tracking-wider hover:brightness-110 transition shrink-0 cursor-pointer shadow"
+                            >
+                              Abrir Mensagem 📬
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
 
                 {myReports.length === 0 && (
                   <div className="text-center py-12 bg-slate-950/40 rounded-xl border border-slate-850">
